@@ -3,7 +3,7 @@ from typing import List, Dict, Optional, Any
 import uuid
 from datetime import datetime
 from llm_controller import LLMController
-from retrievers import SimpleEmbeddingRetriever, ChromaRetriever
+from retrievers import SimpleEmbeddingRetriever, ChromaRetriever, MilvusRetriever
 import json
 import logging
 
@@ -84,7 +84,9 @@ class AgenticMemorySystem:
                  llm_model: str = "gpt-4",
                  evo_threshold: int = 3,
                  api_key: Optional[str] = None,
-                 llm_controller = None):  
+                 llm_controller = None,
+                 use_milvus: bool = False,
+                 collection_name: str = "memories"):  
         """Initialize the memory system.
         
         Args:
@@ -96,8 +98,13 @@ class AgenticMemorySystem:
             llm_controller: Optional custom LLM controller for testing
         """
         self.memories = {}
-        self.retriever = SimpleEmbeddingRetriever(model_name)
-        self.chroma_retriever = ChromaRetriever()
+        self._use_milvus = use_milvus
+        self._collection_name = collection_name
+        if self._use_milvus:
+            self.chroma_retriever = MilvusRetriever(collection_name=self._collection_name)
+        else:
+            self.retriever = SimpleEmbeddingRetriever(model_name)
+            self.chroma_retriever = ChromaRetriever(collection_name=self._collection_name)
         self.llm_controller = llm_controller or LLMController(llm_backend, llm_model, api_key)
         self.evo_cnt = 0
         self.evo_threshold = evo_threshold
@@ -234,7 +241,8 @@ class AgenticMemorySystem:
             "timestamp": note.timestamp
         }
         self.chroma_retriever.add_document(document=content, metadata=metadata, doc_id=note.id)
-        self.retriever.add_document(content)
+        if not self._use_milvus:
+            self.retriever.add_document(content)
         
         # First increment the counter
         self.evo_cnt += 1
@@ -271,14 +279,18 @@ class AgenticMemorySystem:
         
         # 2. Clear and reinitialize retrievers
         # For SimpleEmbeddingRetriever, creating a new instance clears all documents
-        self.retriever = SimpleEmbeddingRetriever(model_name)
+        if not self._use_milvus:
+            self.retriever = SimpleEmbeddingRetriever(model_name)
         
         # For ChromaRetriever, we need to delete the collection and recreate it
         try:
             self.chroma_retriever.client.delete_collection(collection_name)
         except Exception as e:
             logger.warning(f"Failed to delete collection {collection_name}: {e}")
-        self.chroma_retriever = ChromaRetriever(collection_name)
+        if not self._use_milvus:
+            self.chroma_retriever = ChromaRetriever(collection_name)
+        else:
+            self.chroma_retriever = MilvusRetriever(collection_name)
         
         # 3. Re-add all memory documents with their metadata to both retrievers
         for memory_id, memory in self.memories.items():

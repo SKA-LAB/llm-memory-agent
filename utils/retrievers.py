@@ -9,6 +9,9 @@ from chromadb.config import Settings
 import pickle
 from nltk.tokenize import word_tokenize
 import os
+from langchain_milvus import Milvus
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.schema import Document
 
 def simple_tokenize(text):
     return word_tokenize(text)
@@ -19,10 +22,10 @@ class SimpleEmbeddingRetriever:
         self.model = SentenceTransformer(model_name)
         self.documents = []
         self.embeddings = None
-        
+
     def add_document(self, document: str):
         """Add a document to the retriever.
-        
+
         Args:
             document: Text content to add
         """
@@ -33,52 +36,52 @@ class SimpleEmbeddingRetriever:
         else:
             new_embedding = self.model.encode([document])
             self.embeddings = np.vstack([self.embeddings, new_embedding])
-            
+
     def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Search for similar documents.
-        
+
         Args:
             query: Search query
             top_k: Number of results to return
-            
+
         Returns:
             List of dictionaries containing document content and similarity score
         """
         if not self.documents:
             return []
-            
+
         # Get query embedding
         query_embedding = self.model.encode([query])
-        
+
         # Calculate cosine similarities
         similarities = cosine_similarity(query_embedding, self.embeddings)[0]
-        
+
         # Get top k results
         top_indices = np.argsort(similarities)[-top_k:][::-1]
-        
+
         results = []
         for idx in top_indices:
             results.append({
                 'content': self.documents[idx],
                 'score': float(similarities[idx])
             })
-            
+
         return results
 
 class ChromaRetriever:
     """Vector database retrieval using ChromaDB"""
     def __init__(self, collection_name: str = "memories"):
         """Initialize ChromaDB retriever.
-        
+
         Args:
             collection_name: Name of the ChromaDB collection
         """
         self.client = chromadb.Client(Settings(allow_reset=True))
         self.collection = self.client.get_or_create_collection(name=collection_name)
-        
+
     def add_document(self, document: str, metadata: Dict, doc_id: str):
         """Add a document to ChromaDB.
-        
+
         Args:
             document: Text content to add
             metadata: Dictionary of metadata
@@ -91,28 +94,28 @@ class ChromaRetriever:
                 processed_metadata[key] = ", ".join(value)
             else:
                 processed_metadata[key] = value
-                
+
         self.collection.add(
             documents=[document],
             metadatas=[processed_metadata],
             ids=[doc_id]
         )
-        
+
     def delete_document(self, doc_id: str):
         """Delete a document from ChromaDB.
-        
+
         Args:
             doc_id: ID of document to delete
         """
         self.collection.delete(ids=[doc_id])
-        
+
     def search(self, query: str, k: int = 5):
         """Search for similar documents.
-        
+
         Args:
             query: Query text
             k: Number of results to return
-            
+
         Returns:
             List of dicts with document text and metadata
         """
@@ -120,12 +123,49 @@ class ChromaRetriever:
             query_texts=[query],
             n_results=k
         )
-        
+
         # Convert string metadata back to lists where appropriate
         if 'metadatas' in results and results['metadatas']:
             for metadata in results['metadatas']:
                 for key in ['keywords', 'tags']:
                     if key in metadata and isinstance(metadata[key], str):
                         metadata[key] = [item.strip() for item in metadata[key].split(',')]
-                        
+
         return results
+
+
+class MilvusRetriever:
+    """Vector database retrieval using Milvus"""
+    def __init__(self, collection_name: str = "memories", model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+        self.collection_name = collection_name
+        self.embedding_model = HuggingFaceEmbeddings(model_name=model_name)
+        self.vector_store = Milvus(
+            embedding_function=self.embedding_model,
+            collection_name=self.collection_name,
+            connection_args={"uri": "./milvus_example.db"},
+            index_params={"metric_type": "L2", "index_type": "FLAT", "params": {"nlist": 1024}},
+        )
+
+    def add_document(self, document: str, metadata: Dict, doc_id: str):
+        doc = Document(page_content=document, metadata=metadata)
+        self.vector_store.add_documents([doc], ids=[doc_id])
+
+    def delete_document(self, doc_id: str):
+        self.vector_store.delete([doc_id])
+
+    def search(self, query: str, k: int = 5):
+        results = self.vector_store.similarity_search_with_score(query, k=k)
+        return [
+            {
+                "id": result[0].metadata.get("id", ""),
+                "content": result[0].page_content,
+                "metadata": result[0].metadata,
+                "score": result[1],
+            }
+            for result in results
+        ]
+
+    def get_collection_info(self):
+        return self.vector_store.col.schema
+
+# Existing code...
