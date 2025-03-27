@@ -284,13 +284,13 @@ class AgenticMemorySystem:
         
         # For ChromaRetriever, we need to delete the collection and recreate it
         try:
-            self.chroma_retriever.client.delete_collection(collection_name)
+            self.chroma_retriever.client.delete_collection(self._collection_name)
         except Exception as e:
             logger.warning(f"Failed to delete collection {collection_name}: {e}")
         if not self._use_milvus:
-            self.chroma_retriever = ChromaRetriever(collection_name)
+            self.chroma_retriever = ChromaRetriever(self._collection_name)
         else:
-            self.chroma_retriever = MilvusRetriever(collection_name)
+            self.chroma_retriever = MilvusRetriever(self._collection_name)
         
         # 3. Re-add all memory documents with their metadata to both retrievers
         for memory_id, memory in self.memories.items():
