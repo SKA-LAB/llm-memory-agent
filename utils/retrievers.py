@@ -1,7 +1,5 @@
 from typing import List, Dict, Any, Optional, Union
 from sentence_transformers import SentenceTransformer
-from rank_bm25 import BM25Okapi
-import nltk
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import chromadb
@@ -12,6 +10,11 @@ import os
 from langchain_milvus import Milvus
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import Document
+import faiss
+import uuid
+import logging
+
+logger = logging.getLogger(__name__)
 
 def simple_tokenize(text):
     return word_tokenize(text)
@@ -168,4 +171,199 @@ class MilvusRetriever:
     def get_collection_info(self):
         return self.vector_store.col.schema
 
-# Existing code...
+
+class FaissRetriever:
+    """Vector database retrieval using FAISS"""
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', index_path: Optional[str] = None):
+        """Initialize FAISS retriever.
+        
+        Args:
+            model_name: Name of the sentence transformer model
+            index_path: Path to load existing FAISS index (if None, uses default path)
+        """
+        self.model = SentenceTransformer(model_name)
+        self.documents = []
+        self.document_ids = []
+        self.metadata_dict = {}
+        self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        
+        # Set default index path if None is provided
+        if index_path is None:
+            # Create a default path in the user's home directory
+            home_dir = os.path.expanduser("~")
+            default_dir = os.path.join(home_dir, ".llm_memory_agent", "faiss_indices")
+            os.makedirs(default_dir, exist_ok=True)
+            self.index_path = os.path.join(default_dir, f"faiss_index_{model_name.replace('/', '_')}")
+            logger.info(f"Using default FAISS index path: {self.index_path}")
+        else:
+            self.index_path = index_path
+        
+        # Initialize or load FAISS index
+        if os.path.exists(f"{self.index_path}.index"):
+            self._load_index(self.index_path)
+        else:
+            self.index = faiss.IndexFlatL2(self.embedding_dim)
+            logger.info(f"Created new FAISS index at {self.index_path}")
+    
+    def add_document(self, document: str, metadata: Dict = None, doc_id: str = None):
+        """Add a document to the FAISS index.
+        
+        Args:
+            document: Text content to add
+            metadata: Dictionary of metadata
+            doc_id: Unique identifier for the document (generated if not provided)
+        """
+        if doc_id is None:
+            doc_id = str(uuid.uuid4())
+        
+        # Store document and metadata
+        self.documents.append(document)
+        self.document_ids.append(doc_id)
+        
+        if metadata:
+            self.metadata_dict[doc_id] = metadata
+        
+        # Generate embedding and add to index
+        embedding = self.model.encode([document])
+        self.index.add(np.array(embedding, dtype=np.float32))
+        
+        return doc_id
+    
+    def delete_document(self, doc_id: str):
+        """Delete a document from the index.
+        
+        Note: FAISS doesn't support direct deletion. This implementation marks documents
+        as deleted and rebuilds the index when necessary.
+        
+        Args:
+            doc_id: ID of document to delete
+        """
+        if doc_id in self.document_ids:
+            idx = self.document_ids.index(doc_id)
+            # Mark as deleted by setting to None (will be filtered during rebuild)
+            self.documents[idx] = None
+            self.document_ids[idx] = None
+            if doc_id in self.metadata_dict:
+                del self.metadata_dict[doc_id]
+            
+            # Rebuild index if too many deletions (over 25%)
+            if self.documents.count(None) > len(self.documents) * 0.25:
+                self._rebuild_index()
+            
+            return True
+        return False
+    
+    def _rebuild_index(self):
+        """Rebuild the FAISS index after deletions."""
+        # Filter out None values
+        valid_docs = [(i, doc, doc_id) for i, (doc, doc_id) in 
+                     enumerate(zip(self.documents, self.document_ids)) 
+                     if doc is not None]
+        
+        if not valid_docs:
+            # No documents left
+            self.index = faiss.IndexFlatL2(self.embedding_dim)
+            self.documents = []
+            self.document_ids = []
+            return
+        
+        # Unpack the filtered data
+        indices, filtered_docs, filtered_ids = zip(*valid_docs)
+        
+        # Create new index
+        new_index = faiss.IndexFlatL2(self.embedding_dim)
+        
+        # Add embeddings to new index
+        embeddings = self.model.encode(filtered_docs)
+        new_index.add(np.array(embeddings, dtype=np.float32))
+        
+        # Update instance variables
+        self.index = new_index
+        self.documents = list(filtered_docs)
+        self.document_ids = list(filtered_ids)
+        
+        logger.info(f"FAISS index rebuilt with {len(self.documents)} documents")
+    
+    def search(self, query: str, k: int = 5):
+        """Search for similar documents.
+        
+        Args:
+            query: Query text
+            k: Number of results to return
+            
+        Returns:
+            List of dicts with document content, metadata, and similarity score
+        """
+        if not self.documents:
+            return []
+        
+        # Get query embedding
+        query_embedding = self.model.encode([query])
+        
+        # Search FAISS index
+        distances, indices = self.index.search(np.array(query_embedding, dtype=np.float32), k)
+        
+        results = []
+        for i, idx in enumerate(indices[0]):
+            if idx < len(self.documents) and idx >= 0:  # Valid index check
+                doc_id = self.document_ids[idx]
+                metadata = self.metadata_dict.get(doc_id, {})
+                
+                results.append({
+                    'id': doc_id,
+                    'content': self.documents[idx],
+                    'metadata': metadata,
+                    'score': float(1.0 / (1.0 + distances[0][i]))  # Convert distance to similarity score
+                })
+        
+        return results
+    
+    def save_index(self, path: str = None):
+        """Save the FAISS index and associated data to disk.
+        
+        Args:
+            path: Directory path to save the index
+        """
+        if path is None:
+            path = self.index_path or "faiss_index"
+        
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        
+        # Save FAISS index
+        faiss.write_index(self.index, f"{path}.index")
+        
+        # Save documents, IDs and metadata
+        with open(f"{path}.data", 'wb') as f:
+            pickle.dump({
+                'documents': self.documents,
+                'document_ids': self.document_ids,
+                'metadata': self.metadata_dict
+            }, f)
+        
+        logger.info(f"FAISS index saved to {path}")
+    
+    def _load_index(self, path: str):
+        """Load FAISS index and associated data from disk.
+        
+        Args:
+            path: Path to the saved index
+        """
+        # Load FAISS index
+        self.index = faiss.read_index(f"{path}.index")
+        self.index_path = path
+        
+        # Load documents and metadata
+        try:
+            with open(f"{path}.data", 'rb') as f:
+                data = pickle.load(f)
+                self.documents = data['documents']
+                self.document_ids = data['document_ids']
+                self.metadata_dict = data['metadata']
+            
+            logger.info(f"Loaded FAISS index with {len(self.documents)} documents")
+        except (FileNotFoundError, KeyError) as e:
+            logger.error(f"Error loading FAISS data: {e}")
+            # Initialize empty data structures
+            self.documents = []
+            self.document_ids = []
+            self.metadata_dict = {}
