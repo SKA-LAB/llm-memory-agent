@@ -13,3 +13,4 @@ fitz
 PyMuPDF
 langchain-milvus
 langchain-huggingface
+rapidfuzz

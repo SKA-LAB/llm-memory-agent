@@ -11,7 +11,9 @@ from langchain_milvus import Milvus
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.schema import Document
 import faiss
+from datetime import datetime
 import uuid
+from search_reranker import SearchReranker
 import logging
 
 logger = logging.getLogger(__name__)
@@ -174,12 +176,15 @@ class MilvusRetriever:
 
 class FaissRetriever:
     """Vector database retrieval using FAISS"""
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', index_path: Optional[str] = None):
+    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', index_path: Optional[str] = None,
+                 use_reranker: bool = True, reranker_config: Dict = None):
         """Initialize FAISS retriever.
         
         Args:
             model_name: Name of the sentence transformer model
             index_path: Path to load existing FAISS index (if None, uses default path)
+            use_reranker: Whether to use the search reranker
+            reranker_config: Configuration for the reranker (weights, etc.)
         """
         self.model = SentenceTransformer(model_name)
         self.documents = []
@@ -204,6 +209,13 @@ class FaissRetriever:
         else:
             self.index = faiss.IndexFlatL2(self.embedding_dim)
             logger.info(f"Created new FAISS index at {self.index_path}")
+        
+        # Initialize reranker if enabled
+        self.use_reranker = use_reranker
+        if use_reranker:
+            reranker_config = reranker_config or {}
+            self.reranker = SearchReranker(**reranker_config)
+            logger.info("Search reranker enabled")
     
     def add_document(self, document: str, metadata: Dict = None, doc_id: str = None):
         """Add a document to the FAISS index.
@@ -284,12 +296,13 @@ class FaissRetriever:
         
         logger.info(f"FAISS index rebuilt with {len(self.documents)} documents")
     
-    def search(self, query: str, k: int = 5):
+    def search(self, query: str, k: int = 5, rerank: bool = None):
         """Search for similar documents.
         
         Args:
             query: Query text
             k: Number of results to return
+            rerank: Whether to apply reranking (overrides instance setting if provided)
             
         Returns:
             List of dicts with document content, metadata, and similarity score
@@ -297,17 +310,29 @@ class FaissRetriever:
         if not self.documents:
             return []
         
+        # Determine whether to use reranking
+        apply_reranking = self.use_reranker if rerank is None else rerank
+        
+        # Get more results if reranking to allow for filtering
+        search_k = k * 5 if apply_reranking else k
+        
         # Get query embedding
         query_embedding = self.model.encode([query])
         
         # Search FAISS index
-        distances, indices = self.index.search(np.array(query_embedding, dtype=np.float32), k)
+        distances, indices = self.index.search(np.array(query_embedding, dtype=np.float32), min(search_k, len(self.documents)))
         
         results = []
         for i, idx in enumerate(indices[0]):
             if idx < len(self.documents) and idx >= 0:  # Valid index check
                 doc_id = self.document_ids[idx]
                 metadata = self.metadata_dict.get(doc_id, {})
+                
+                # Update retrieval count in metadata
+                if doc_id in self.metadata_dict:
+                    retrieval_count = self.metadata_dict[doc_id].get('retrieval_count', 0)
+                    self.metadata_dict[doc_id]['retrieval_count'] = retrieval_count + 1
+                    self.metadata_dict[doc_id]['last_accessed'] = datetime.now().isoformat()
                 
                 results.append({
                     'id': doc_id,
@@ -316,7 +341,39 @@ class FaissRetriever:
                     'score': float(1.0 / (1.0 + distances[0][i]))  # Convert distance to similarity score
                 })
         
-        return results
+        # Apply reranking if enabled
+        if apply_reranking and hasattr(self, 'reranker'):
+            results = self.reranker.rerank(query, results)
+        
+        return results[:k]
+    
+    # Add a method to configure the reranker
+    def configure_reranker(self, enable: bool = True, **kwargs):
+        """Configure the search reranker.
+        
+        Args:
+            enable: Whether to enable the reranker
+            **kwargs: Configuration parameters for the reranker
+        
+        Returns:
+            bool: Whether the configuration was successful
+        """
+        try:
+            self.use_reranker = enable
+            if enable:
+                if hasattr(self, 'reranker'):
+                    # Update existing reranker configuration
+                    for key, value in kwargs.items():
+                        if hasattr(self.reranker, key):
+                            setattr(self.reranker, key, value)
+                else:
+                    # Create new reranker
+                    self.reranker = SearchReranker(**kwargs)
+                logger.info("Search reranker configured")
+            return True
+        except Exception as e:
+            logger.error(f"Error configuring reranker: {e}")
+            return False
     
     def save_index(self, path: str = None):
         """Save the FAISS index and associated data to disk.

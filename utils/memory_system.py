@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Any, Tuple
 import uuid
 from datetime import datetime
 from llm_controller import LLMController
-from retrievers import ChromaRetriever
+from retrievers import ChromaRetriever, FaissRetriever
 import json
 import logging
 
@@ -79,10 +79,12 @@ class AgenticMemorySystem:
     
     def __init__(self, 
                  model_name: str = 'all-MiniLM-L6-v2',
-                 llm_backend: str = "openai",
-                 llm_model: str = "gpt-4o-mini",
-                 evo_threshold: int = 100,
-                 api_key: Optional[str] = None):  
+                 llm_backend: str = "ollama",
+                 llm_model: str = "qwen2.5:7b",
+                 evo_threshold: int = 10,
+                 api_key: Optional[str] = None,
+                 retriever_type: str = "chroma",
+                 index_path: Optional[str] = None):  
         """Initialize the memory system.
         
         Args:
@@ -91,19 +93,31 @@ class AgenticMemorySystem:
             llm_model: Name of the LLM model
             evo_threshold: Number of memories before triggering evolution
             api_key: API key for the LLM service
+            retriever_type: Type of retriever to use ("chroma" or "faiss")
+            index_path: Path to load/save FAISS index (if None, uses default path)
         """
         self.memories = {}
         self.model_name = model_name
-        # Initialize ChromaDB retriever with empty collection
-        try:
-            # First try to reset the collection if it exists
-            temp_retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
-            temp_retriever.client.reset()
-        except Exception as e:
-            logger.warning(f"Could not reset ChromaDB collection: {e}")
-            
-        # Create a fresh retriever instance
-        self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+        self.retriever_type = retriever_type.lower()
+        
+        # Initialize the appropriate retriever based on the type
+        if self.retriever_type == "chroma":
+            try:
+                # First try to reset the collection if it exists
+                temp_retriever = ChromaRetriever(collection_name="memories", model_name=self.model_name)
+                temp_retriever.client.reset()
+            except Exception as e:
+                logger.warning(f"Could not reset ChromaDB collection: {e}")
+                
+            # Create a fresh retriever instance
+            self.retriever = ChromaRetriever(collection_name="memories", model_name=self.model_name)
+        elif self.retriever_type == "faiss":
+            # Initialize FAISS retriever
+            self.retriever = FaissRetriever(model_name=self.model_name, index_path=index_path)
+        else:
+            logger.warning(f"Unknown retriever type: {retriever_type}. Defaulting to ChromaDB.")
+            self.retriever_type = "chroma"
+            self.retriever = ChromaRetriever(collection_name="memories", model_name=self.model_name)
         
         # Initialize LLM controller
         self.llm_controller = LLMController(llm_backend, llm_model, api_key)
@@ -137,12 +151,66 @@ class AgenticMemorySystem:
                                     "should_evolve": True or False,
                                     "actions": ["strengthen", "update_neighbor"],
                                     "suggested_connections": ["neighbor_memory_ids"],
-                                    "tags_to_update": ["tag_1",..."tag_n"], 
+                                    "tags_to_update": ["tag_1",...,"tag_n"], 
                                     "new_context_neighborhood": ["new context",...,"new context"],
                                     "new_tags_neighborhood": [["tag_1",...,"tag_n"],...["tag_1",...,"tag_n"]],
                                 }}
                                 '''
+    
+    def switch_retriever(self, retriever_type: str, index_path: Optional[str] = None):
+        """Switch between retriever types.
         
+        Args:
+            retriever_type: Type of retriever to use ("chroma" or "faiss")
+            index_path: Path to load/save FAISS index (if None, uses default path)
+        
+        Returns:
+            bool: True if switch was successful, False otherwise
+        """
+        retriever_type = retriever_type.lower()
+        if retriever_type not in ["chroma", "faiss"]:
+            logger.warning(f"Unknown retriever type: {retriever_type}. Keeping current retriever.")
+            return False
+            
+        if retriever_type == self.retriever_type:
+            logger.info(f"Already using {retriever_type} retriever.")
+            return True
+            
+        # Save current memories to new retriever
+        old_retriever = self.retriever
+        
+        try:
+            if retriever_type == "chroma":
+                self.retriever = ChromaRetriever(collection_name="memories", model_name=self.model_name)
+            else:  # faiss
+                self.retriever = FaissRetriever(model_name=self.model_name, index_path=index_path)
+                
+            # Migrate all memories to the new retriever
+            for memory_id, memory in self.memories.items():
+                metadata = {
+                    "id": memory.id,
+                    "content": memory.content,
+                    "keywords": memory.keywords,
+                    "links": memory.links,
+                    "retrieval_count": memory.retrieval_count,
+                    "timestamp": memory.timestamp,
+                    "last_accessed": memory.last_accessed,
+                    "context": memory.context,
+                    "evolution_history": memory.evolution_history,
+                    "category": memory.category,
+                    "tags": memory.tags
+                }
+                self.retriever.add_document(memory.content, metadata, memory.id)
+                
+            self.retriever_type = retriever_type
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error switching retriever: {str(e)}")
+            self.retriever = old_retriever  # Restore old retriever
+            return False
+        
+    
     def analyze_content(self, content: str) -> Dict:            
         """Analyze content using LLM to extract semantic metadata.
         
@@ -217,18 +285,22 @@ class AgenticMemorySystem:
             print(f"Error analyzing content: {e}")
             return {"keywords": [], "context": "General", "tags": []}
 
+        
     def add_note(self, content: str, time: str = None, **kwargs) -> str:
         """Add a new memory note"""
         # Create MemoryNote without llm_controller
         if time is not None:
             kwargs['timestamp'] = time
+        features = self.analyze_content(content)
+        for key, value in features.items():
+            kwargs[key] = value
         note = MemoryNote(content=content, **kwargs)
         
         # Update retriever with all documents
         evo_label, note = self.process_memory(note)
         self.memories[note.id] = note
         
-        # Add to ChromaDB with complete metadata
+        # Add to retriever with complete metadata
         metadata = {
             "id": note.id,
             "content": note.content,
@@ -252,8 +324,13 @@ class AgenticMemorySystem:
     
     def consolidate_memories(self):
         """Consolidate memories: update retriever with new documents"""
-        # Reset ChromaDB collection
-        self.retriever = ChromaRetriever(collection_name="memories",model_name=self.model_name)
+        if self.retriever_type == "chroma":
+            # Reset ChromaDB collection
+            self.retriever = ChromaRetriever(collection_name="memories", model_name=self.model_name)
+        elif self.retriever_type == "faiss":
+            # For FAISS, we'll create a new index
+            index_path = getattr(self.retriever, "index_path", None)
+            self.retriever = FaissRetriever(model_name=self.model_name, index_path=index_path)
         
         # Re-add all memory documents with their complete metadata
         for memory in self.memories.values():
@@ -271,27 +348,44 @@ class AgenticMemorySystem:
                 "tags": memory.tags
             }
             self.retriever.add_document(memory.content, metadata, memory.id)
+            
+        # For FAISS, explicitly save the index
+        if self.retriever_type == "faiss" and hasattr(self.retriever, "save_index"):
+            try:
+                self.retriever.save_index()
+            except Exception as e:
+                logger.error(f"Error saving FAISS index: {str(e)}")
     
     def find_related_memories(self, query: str, k: int = 5) -> Tuple[str, List[int]]:
-        """Find related memories using ChromaDB retrieval"""
+        """Find related memories using retrieval"""
         if not self.memories:
             return "", []
             
         try:
-            # Get results from ChromaDB
+            # Get results from retriever
             results = self.retriever.search(query, k)
             
             # Convert to list of memories
             memory_str = ""
             indices = []
             
-            if 'ids' in results and results['ids'] and len(results['ids']) > 0 and len(results['ids'][0]) > 0:
-                for i, doc_id in enumerate(results['ids'][0]):
-                    # Get metadata from ChromaDB results
-                    if i < len(results['metadatas'][0]):
-                        metadata = results['metadatas'][0][i]
-                        # Format memory string
-                        memory_str += f"memory index:{i}\ttalk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
+            # Handle different result formats based on retriever type
+            if self.retriever_type == "chroma":
+                if 'ids' in results and results['ids'] and len(results['ids']) > 0 and len(results['ids'][0]) > 0:
+                    for i, doc_id in enumerate(results['ids'][0]):
+                        # Get metadata from ChromaDB results
+                        if i < len(results['metadatas'][0]):
+                            metadata = results['metadatas'][0][i]
+                            # Format memory string
+                            memory_str += f"memory index:{i}\ttalk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
+                            indices.append(i)
+            elif self.retriever_type == "faiss":
+                # For FAISS, results might be in a different format
+                for i, result in enumerate(results):
+                    doc_id = result.get('id')
+                    if doc_id in self.memories:
+                        memory = self.memories[doc_id]
+                        memory_str += f"memory index:{i}\ttalk start time:{memory.timestamp}\tmemory content: {memory.content}\tmemory context: {memory.context}\tmemory keywords: {str(memory.keywords)}\tmemory tags: {str(memory.tags)}\n"
                         indices.append(i)
                     
             return memory_str, indices
@@ -300,34 +394,56 @@ class AgenticMemorySystem:
             return "", []
 
     def find_related_memories_raw(self, query: str, k: int = 5) -> str:
-        """Find related memories using ChromaDB retrieval in raw format"""
+        """Find related memories using retrieval in raw format"""
         if not self.memories:
             return ""
             
-        # Get results from ChromaDB
-        results = self.retriever.search(query, k)
-        
-        # Convert to list of memories
-        memory_str = ""
-        
-        if 'ids' in results and results['ids'] and len(results['ids']) > 0:
-            for i, doc_id in enumerate(results['ids'][0][:k]):
-                if i < len(results['metadatas'][0]):
-                    # Get metadata from ChromaDB results
-                    metadata = results['metadatas'][0][i]
-                    
-                    # Add main memory info
-                    memory_str += f"talk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
-                    
-                    # Add linked memories if available
-                    links = metadata.get('links', [])
-                    j = 0
-                    for link_id in links:
-                        if link_id in self.memories and j < k:
-                            neighbor = self.memories[link_id]
-                            memory_str += f"talk start time:{neighbor.timestamp}\tmemory content: {neighbor.content}\tmemory context: {neighbor.context}\tmemory keywords: {str(neighbor.keywords)}\tmemory tags: {str(neighbor.tags)}\n"
-                            j += 1
+        try:
+            # Get results from retriever
+            results = self.retriever.search(query, k)
+            
+            # Convert to list of memories
+            memory_str = ""
+            
+            # Handle different result formats based on retriever type
+            if self.retriever_type == "chroma":
+                if 'ids' in results and results['ids'] and len(results['ids']) > 0:
+                    for i, doc_id in enumerate(results['ids'][0][:k]):
+                        if i < len(results['metadatas'][0]):
+                            # Get metadata from ChromaDB results
+                            metadata = results['metadatas'][0][i]
                             
+                            # Add main memory info
+                            memory_str += f"talk start time:{metadata.get('timestamp', '')}\tmemory content: {metadata.get('content', '')}\tmemory context: {metadata.get('context', '')}\tmemory keywords: {str(metadata.get('keywords', []))}\tmemory tags: {str(metadata.get('tags', []))}\n"
+                            
+                            # Add linked memories if available
+                            links = metadata.get('links', [])
+                            j = 0
+                            for link_id in links:
+                                if link_id in self.memories and j < k:
+                                    neighbor = self.memories[link_id]
+                                    memory_str += f"talk start time:{neighbor.timestamp}\tmemory content: {neighbor.content}\tmemory context: {neighbor.context}\tmemory keywords: {str(neighbor.keywords)}\tmemory tags: {str(neighbor.tags)}\n"
+                                    j += 1
+            elif self.retriever_type == "faiss":
+                # For FAISS, results might be in a different format
+                for i, result in enumerate(results[:k]):
+                    doc_id = result.get('id')
+                    if doc_id in self.memories:
+                        memory = self.memories[doc_id]
+                        memory_str += f"talk start time:{memory.timestamp}\tmemory content: {memory.content}\tmemory context: {memory.context}\tmemory keywords: {str(memory.keywords)}\tmemory tags: {str(memory.tags)}\n"
+                        
+                        # Add linked memories if available
+                        j = 0
+                        for link_id in memory.links:
+                            if link_id in self.memories and j < k:
+                                neighbor = self.memories[link_id]
+                                memory_str += f"talk start time:{neighbor.timestamp}\tmemory content: {neighbor.content}\tmemory context: {neighbor.context}\tmemory keywords: {str(neighbor.keywords)}\tmemory tags: {str(neighbor.tags)}\n"
+                                j += 1
+                            
+        except Exception as e:
+            logger.error(f"Error in find_related_memories_raw: {str(e)}")
+            return ""
+            
         return memory_str
 
     def read(self, memory_id: str) -> Optional[MemoryNote]:
@@ -361,7 +477,7 @@ class AgenticMemorySystem:
             if hasattr(note, key):
                 setattr(note, key, value)
                 
-        # Update in ChromaDB
+        # Update in retriever
         metadata = {
             "id": note.id,
             "content": note.content,
@@ -392,7 +508,7 @@ class AgenticMemorySystem:
             bool: True if memory was deleted, False if not found
         """
         if memory_id in self.memories:
-            # Delete from ChromaDB
+            # Delete from retriever
             self.retriever.delete_document(memory_id)
             # Delete from local storage
             del self.memories[memory_id]
@@ -400,7 +516,7 @@ class AgenticMemorySystem:
         return False
     
     def _search_raw(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Internal search method that returns raw results from ChromaDB.
+        """Internal search method that returns raw results from retriever.
         
         This is used internally by the memory evolution system to find
         related memories for potential evolution.
@@ -410,133 +526,122 @@ class AgenticMemorySystem:
             k (int): Maximum number of results to return
             
         Returns:
-            List[Dict[str, Any]]: Raw search results from ChromaDB
+            List[Dict[str, Any]]: Raw search results
         """
         results = self.retriever.search(query, k)
-        return [{'id': doc_id, 'score': score} 
-                for doc_id, score in zip(results['ids'][0], results['distances'][0])]
+        
+        # Format results based on retriever type
+        if self.retriever_type == "chroma":
+            return [{'id': doc_id, 'score': score} 
+                    for doc_id, score in zip(results['ids'][0], results['distances'][0])]
+        elif self.retriever_type == "faiss":
+            # For FAISS, results might already be in the right format
+            return results
+        
+        return []
                 
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for memories using a hybrid retrieval approach."""
-        # Get results from ChromaDB (only do this once)
+        """Search for memories using the configured retriever."""
+        # Get results from retriever
         search_results = self.retriever.search(query, k)
         memories = []
         
-        # Process ChromaDB results
-        for i, doc_id in enumerate(search_results['ids'][0]):
-            memory = self.memories.get(doc_id)
-            if memory:
-                memories.append({
-                    'id': doc_id,
-                    'content': memory.content,
-                    'context': memory.context,
-                    'keywords': memory.keywords,
-                    'score': search_results['distances'][0][i]
-                })
-        
-        return memories[:k]
-    
-    def _search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for memories using a hybrid retrieval approach.
-        
-        This method combines results from both:
-        1. ChromaDB vector store (semantic similarity)
-        2. Embedding-based retrieval (dense vectors)
-        
-        The results are deduplicated and ranked by relevance.
-        
-        Args:
-            query (str): The search query text
-            k (int): Maximum number of results to return
-            
-        Returns:
-            List[Dict[str, Any]]: List of search results, each containing:
-                - id: Memory ID
-                - content: Memory content
-                - score: Similarity score
-                - metadata: Additional memory metadata
-        """
-        # Get results from ChromaDB
-        chroma_results = self.retriever.search(query, k)
-        memories = []
-        
-        # Process ChromaDB results
-        for i, doc_id in enumerate(chroma_results['ids'][0]):
-            memory = self.memories.get(doc_id)
-            if memory:
-                memories.append({
-                    'id': doc_id,
-                    'content': memory.content,
-                    'context': memory.context,
-                    'keywords': memory.keywords,
-                    'score': chroma_results['distances'][0][i]
-                })
-                
-        # Get results from embedding retriever
-        embedding_results = self.retriever.search(query, k)
-        
-        # Combine results with deduplication
-        seen_ids = set(m['id'] for m in memories)
-        for result in embedding_results:
-            memory_id = result.get('id')
-            if memory_id and memory_id not in seen_ids:
-                memory = self.memories.get(memory_id)
+        # Process results based on retriever type
+        if self.retriever_type == "chroma":
+            for i, doc_id in enumerate(search_results['ids'][0]):
+                memory = self.memories.get(doc_id)
                 if memory:
                     memories.append({
-                        'id': memory_id,
+                        'id': doc_id,
+                        'content': memory.content,
+                        'context': memory.context,
+                        'keywords': memory.keywords,
+                        'score': search_results['distances'][0][i]
+                    })
+        elif self.retriever_type == "faiss":
+            for result in search_results:
+                doc_id = result.get('id')
+                memory = self.memories.get(doc_id)
+                if memory:
+                    memories.append({
+                        'id': doc_id,
                         'content': memory.content,
                         'context': memory.context,
                         'keywords': memory.keywords,
                         'score': result.get('score', 0.0)
                     })
-                    seen_ids.add(memory_id)
-                    
+        
         return memories[:k]
 
     def search_agentic(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        """Search for memories using ChromaDB retrieval."""
+        """Search for memories using the configured retriever."""
         if not self.memories:
             return []
             
         try:
-            # Get results from ChromaDB
+            # Get results from retriever
             results = self.retriever.search(query, k)
             
             # Process results
             memories = []
             seen_ids = set()
             
-            # Check if we have valid results
-            if ('ids' not in results or not results['ids'] or 
-                len(results['ids']) == 0 or len(results['ids'][0]) == 0):
-                return []
-                
-            # Process ChromaDB results
-            for i, doc_id in enumerate(results['ids'][0][:k]):
-                if doc_id in seen_ids:
-                    continue
+            # Process results based on retriever type
+            if self.retriever_type == "chroma":
+                # Check if we have valid results
+                if ('ids' not in results or not results['ids'] or 
+                    len(results['ids']) == 0 or len(results['ids'][0]) == 0):
+                    return []
                     
-                if i < len(results['metadatas'][0]):
-                    metadata = results['metadatas'][0][i]
-                    
-                    # Create result dictionary with all metadata fields
-                    memory_dict = {
-                        'id': doc_id,
-                        'content': metadata.get('content', ''),
-                        'context': metadata.get('context', ''),
-                        'keywords': metadata.get('keywords', []),
-                        'tags': metadata.get('tags', []),
-                        'timestamp': metadata.get('timestamp', ''),
-                        'category': metadata.get('category', 'Uncategorized'),
-                        'is_neighbor': False
-                    }
-                    
-                    # Add score if available
-                    if 'distances' in results and len(results['distances']) > 0 and i < len(results['distances'][0]):
-                        memory_dict['score'] = results['distances'][0][i]
+                # Process ChromaDB results
+                for i, doc_id in enumerate(results['ids'][0][:k]):
+                    if doc_id in seen_ids:
+                        continue
                         
-                    memories.append(memory_dict)
-                    seen_ids.add(doc_id)
+                    if i < len(results['metadatas'][0]):
+                        metadata = results['metadatas'][0][i]
+                        
+                        # Create result dictionary with all metadata fields
+                        memory_dict = {
+                            'id': doc_id,
+                            'content': metadata.get('content', ''),
+                            'context': metadata.get('context', ''),
+                            'keywords': metadata.get('keywords', []),
+                            'tags': metadata.get('tags', []),
+                            'timestamp': metadata.get('timestamp', ''),
+                            'category': metadata.get('category', 'Uncategorized'),
+                            'is_neighbor': False
+                        }
+                        
+                        # Add score if available
+                        if 'distances' in results and len(results['distances']) > 0 and i < len(results['distances'][0]):
+                            memory_dict['score'] = results['distances'][0][i]
+                            
+                        memories.append(memory_dict)
+                        seen_ids.add(doc_id)
+            
+            elif self.retriever_type == "faiss":
+                # Process FAISS results
+                for i, result in enumerate(results[:k]):
+                    doc_id = result.get('id')
+                    if doc_id in seen_ids:
+                        continue
+                        
+                    memory = self.memories.get(doc_id)
+                    if memory:
+                        memory_dict = {
+                            'id': doc_id,
+                            'content': memory.content,
+                            'context': memory.context,
+                            'keywords': memory.keywords,
+                            'tags': memory.tags,
+                            'timestamp': memory.timestamp,
+                            'category': memory.category,
+                            'is_neighbor': False,
+                            'score': result.get('score', 0.0)
+                        }
+                        memories.append(memory_dict)
+                        seen_ids.add(doc_id)
             
             # Add linked memories (neighbors)
             neighbor_count = 0
