@@ -1,196 +1,57 @@
-from typing import List, Dict, Any, Optional, Union
-from sentence_transformers import SentenceTransformer
+from typing import List, Dict, Any, Optional, Union, Type, TypeVar, Generic, cast
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-import chromadb
-from chromadb.config import Settings
-import pickle
-from nltk.tokenize import word_tokenize
-import os
-from langchain_milvus import Milvus
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain.schema import Document
 import faiss
-from datetime import datetime
+import pickle
+import os
 import uuid
-from search_reranker import SearchReranker
+from datetime import datetime
 import logging
+from langchain_ollama import OllamaEmbeddings
+from pydantic import BaseModel
+
+# Import the note types from cornell_zettel_memory_system
+from cornell_zettel_memory_system import CornellMethodNote, ZettelNote
+# Import SearchReranker
+from utils.search_reranker import SearchReranker
 
 logger = logging.getLogger(__name__)
 
-def simple_tokenize(text):
-    return word_tokenize(text)
+# Generic type for note objects
+T = TypeVar('T', bound=BaseModel)
 
-class SimpleEmbeddingRetriever:
-    """Simple retriever using sentence embeddings"""
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2'):
-        self.model = SentenceTransformer(model_name)
-        self.documents = []
-        self.embeddings = None
-
-    def add_document(self, document: str):
-        """Add a document to the retriever.
-
-        Args:
-            document: Text content to add
-        """
-        self.documents.append(document)
-        # Update embeddings
-        if len(self.documents) == 1:
-            self.embeddings = self.model.encode([document])
-        else:
-            new_embedding = self.model.encode([document])
-            self.embeddings = np.vstack([self.embeddings, new_embedding])
-
-    def search(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for similar documents.
-
-        Args:
-            query: Search query
-            top_k: Number of results to return
-
-        Returns:
-            List of dictionaries containing document content and similarity score
-        """
-        if not self.documents:
-            return []
-
-        # Get query embedding
-        query_embedding = self.model.encode([query])
-
-        # Calculate cosine similarities
-        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
-
-        # Get top k results
-        top_indices = np.argsort(similarities)[-top_k:][::-1]
-
-        results = []
-        for idx in top_indices:
-            results.append({
-                'content': self.documents[idx],
-                'score': float(similarities[idx])
-            })
-
-        return results
-
-class ChromaRetriever:
-    """Vector database retrieval using ChromaDB"""
-    def __init__(self, collection_name: str = "memories"):
-        """Initialize ChromaDB retriever.
-
-        Args:
-            collection_name: Name of the ChromaDB collection
-        """
-        self.client = chromadb.Client(Settings(allow_reset=True))
-        self.collection = self.client.get_or_create_collection(name=collection_name)
-
-    def add_document(self, document: str, metadata: Dict, doc_id: str):
-        """Add a document to ChromaDB.
-
-        Args:
-            document: Text content to add
-            metadata: Dictionary of metadata
-            doc_id: Unique identifier for the document
-        """
-        # Convert lists to strings in metadata to comply with ChromaDB requirements
-        processed_metadata = {}
-        for key, value in metadata.items():
-            if isinstance(value, list):
-                processed_metadata[key] = ", ".join(value)
-            else:
-                processed_metadata[key] = value
-
-        self.collection.add(
-            documents=[document],
-            metadatas=[processed_metadata],
-            ids=[doc_id]
-        )
-
-    def delete_document(self, doc_id: str):
-        """Delete a document from ChromaDB.
-
-        Args:
-            doc_id: ID of document to delete
-        """
-        self.collection.delete(ids=[doc_id])
-
-    def search(self, query: str, k: int = 5):
-        """Search for similar documents.
-
-        Args:
-            query: Query text
-            k: Number of results to return
-
-        Returns:
-            List of dicts with document text and metadata
-        """
-        results = self.collection.query(
-            query_texts=[query],
-            n_results=k
-        )
-
-        # Convert string metadata back to lists where appropriate
-        if 'metadatas' in results and results['metadatas']:
-            for metadata in results['metadatas']:
-                for key in ['keywords', 'tags']:
-                    if key in metadata and isinstance(metadata[key], str):
-                        metadata[key] = [item.strip() for item in metadata[key].split(',')]
-
-        return results
-
-
-class MilvusRetriever:
-    """Vector database retrieval using Milvus"""
-    def __init__(self, collection_name: str = "memories", model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        self.collection_name = collection_name
-        self.embedding_model = HuggingFaceEmbeddings(model_name=model_name)
-        self.vector_store = Milvus(
-            embedding_function=self.embedding_model,
-            collection_name=self.collection_name,
-            connection_args={"uri": "./milvus_example.db"},
-            index_params={"metric_type": "L2", "index_type": "FLAT", "params": {"nlist": 1024}},
-        )
-
-    def add_document(self, document: str, metadata: Dict, doc_id: str):
-        doc = Document(page_content=document, metadata=metadata)
-        self.vector_store.add_documents([doc], ids=[doc_id])
-
-    def delete_document(self, doc_id: str):
-        self.vector_store.delete([doc_id])
-
-    def search(self, query: str, k: int = 5):
-        results = self.vector_store.similarity_search_with_score(query, k=k)
-        return [
-            {
-                "id": result[0].metadata.get("id", ""),
-                "content": result[0].page_content,
-                "metadata": result[0].metadata,
-                "score": result[1],
-            }
-            for result in results
-        ]
-
-    def get_collection_info(self):
-        return self.vector_store.col.schema
-
-
-class FaissRetriever:
-    """Vector database retrieval using FAISS"""
-    def __init__(self, model_name: str = 'all-MiniLM-L6-v2', index_path: Optional[str] = None,
-                 use_reranker: bool = True, reranker_config: Dict = None):
-        """Initialize FAISS retriever.
+class FaissRetriever(Generic[T]):
+    """Vector database retrieval using FAISS optimized for Cornell and Zettel notes"""
+    def __init__(self, 
+                 note_class: Type[T],
+                 model_name: str = 'nomic-embed-text',
+                 index_path: Optional[str] = None,
+                 use_reranker: bool = True,
+                 reranker_config: Optional[Dict[str, float]] = None):
+        """Initialize FAISS retriever for specific note types.
         
         Args:
-            model_name: Name of the sentence transformer model
+            note_class: The class of notes to index (CornellMethodNote or ZettelNote)
+            model_name: Name of the Ollama embedding model
             index_path: Path to load existing FAISS index (if None, uses default path)
-            use_reranker: Whether to use the search reranker
-            reranker_config: Configuration for the reranker (weights, etc.)
+            use_reranker: Whether to use the SearchReranker for search results
+            reranker_config: Configuration for the SearchReranker weights
         """
-        self.model = SentenceTransformer(model_name)
-        self.documents = []
-        self.document_ids = []
-        self.metadata_dict = {}
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        self.note_class = note_class
+        self.class_name = note_class.__name__
+        
+        # Initialize Ollama embeddings
+        self.embeddings = OllamaEmbeddings(
+            model=model_name
+        )
+        
+        # Get embedding dimension by embedding a test string
+        test_embedding = self.embeddings.embed_query("test")
+        self.embedding_dim = len(test_embedding)
+        
+        # Initialize storage for notes and their IDs
+        self.notes = {}  # Store actual note objects
+        self.note_ids = []  # Store IDs in order they were added
+        self.metadata_dict = {}  # Store additional metadata
         
         # Set default index path if None is provided
         if index_path is None:
@@ -198,7 +59,7 @@ class FaissRetriever:
             home_dir = os.path.expanduser("~")
             default_dir = os.path.join(home_dir, ".llm_memory_agent", "faiss_indices")
             os.makedirs(default_dir, exist_ok=True)
-            self.index_path = os.path.join(default_dir, f"faiss_index_{model_name.replace('/', '_')}")
+            self.index_path = os.path.join(default_dir, f"faiss_index_{self.class_name}_{model_name}")
             logger.info(f"Using default FAISS index path: {self.index_path}")
         else:
             self.index_path = index_path
@@ -208,40 +69,86 @@ class FaissRetriever:
             self._load_index(self.index_path)
         else:
             self.index = faiss.IndexFlatL2(self.embedding_dim)
-            logger.info(f"Created new FAISS index at {self.index_path}")
+            logger.info(f"Created new FAISS index for {self.class_name} at {self.index_path}")
         
-        # Initialize reranker if enabled
+        # Initialize SearchReranker with default or custom configuration
         self.use_reranker = use_reranker
         if use_reranker:
-            reranker_config = reranker_config or {}
-            self.reranker = SearchReranker(**reranker_config)
-            logger.info("Search reranker enabled")
+            if reranker_config is None:
+                # Default configuration
+                self.reranker = SearchReranker(
+                    recency_weight=0.2,
+                    retrieval_count_weight=0.1,
+                    keyword_match_weight=0.2,
+                    text_overlap_weight=0.1
+                )
+            else:
+                # Custom configuration
+                self.reranker = SearchReranker(
+                    recency_weight=reranker_config.get('recency_weight', 0.2),
+                    retrieval_count_weight=reranker_config.get('retrieval_count_weight', 0.1),
+                    keyword_match_weight=reranker_config.get('keyword_match_weight', 0.2),
+                    text_overlap_weight=reranker_config.get('text_overlap_weight', 0.1),
+                    custom_scoring_fn=reranker_config.get('custom_scoring_fn', None)
+                )
+            logger.info(f"Initialized SearchReranker for {self.class_name}")
+        else:
+            self.reranker = None
+            logger.info(f"SearchReranker disabled for {self.class_name}")
     
-    def add_document(self, document: str, metadata: Dict = None, doc_id: str = None):
-        """Add a document to the FAISS index.
+    def _normalize_embedding(self, embedding: List[float]) -> np.ndarray:
+        """Normalize embedding vector to unit length.
         
         Args:
-            document: Text content to add
-            metadata: Dictionary of metadata
-            doc_id: Unique identifier for the document (generated if not provided)
+            embedding: The embedding vector to normalize
+            
+        Returns:
+            Normalized embedding as numpy array
         """
+        embedding_array = np.array(embedding, dtype=np.float32)
+        norm = np.linalg.norm(embedding_array)
+        if norm > 0:
+            embedding_array = embedding_array / norm
+        return embedding_array
+    
+    def add_document(self, note: T, doc_id: str = None) -> str:
+        """Add a note to the FAISS index.
+        
+        Args:
+            note: CornellMethodNote or ZettelNote object to add
+            doc_id: Unique identifier for the document (uses note.id if not provided)
+            
+        Returns:
+            The document ID
+        """
+        # Use the note's ID if no doc_id is provided
         if doc_id is None:
-            doc_id = str(uuid.uuid4())
+            doc_id = note.id
         
-        # Store document and metadata
-        self.documents.append(document)
-        self.document_ids.append(doc_id)
+        # Store the note object and its ID
+        self.notes[doc_id] = note
+        self.note_ids.append(doc_id)
         
-        if metadata:
-            self.metadata_dict[doc_id] = metadata
+        # Extract content for embedding
+        content = note.content
         
-        # Generate embedding and add to index
-        embedding = self.model.encode([document])
-        self.index.add(np.array(embedding, dtype=np.float32))
+        # Create metadata dictionary from note attributes
+        metadata = note.model_dump()
+        # Remove content from metadata as it's already embedded
+        if 'content' in metadata:
+            metadata['content_preview'] = metadata['content'][:100] + "..." if len(metadata['content']) > 100 else metadata['content']
+        
+        # Store metadata
+        self.metadata_dict[doc_id] = metadata
+        
+        # Generate embedding, normalize it, and add to index
+        embedding = self.embeddings.embed_query(content)
+        normalized_embedding = self._normalize_embedding(embedding)
+        self.index.add(np.array([normalized_embedding]))
         
         return doc_id
     
-    def delete_document(self, doc_id: str):
+    def delete_document(self, doc_id: str) -> bool:
         """Delete a document from the index.
         
         Note: FAISS doesn't support direct deletion. This implementation marks documents
@@ -249,17 +156,21 @@ class FaissRetriever:
         
         Args:
             doc_id: ID of document to delete
+            
+        Returns:
+            Whether the deletion was successful
         """
-        if doc_id in self.document_ids:
-            idx = self.document_ids.index(doc_id)
+        if doc_id in self.note_ids:
+            idx = self.note_ids.index(doc_id)
             # Mark as deleted by setting to None (will be filtered during rebuild)
-            self.documents[idx] = None
-            self.document_ids[idx] = None
+            self.note_ids[idx] = None
+            if doc_id in self.notes:
+                del self.notes[doc_id]
             if doc_id in self.metadata_dict:
                 del self.metadata_dict[doc_id]
             
             # Rebuild index if too many deletions (over 25%)
-            if self.documents.count(None) > len(self.documents) * 0.25:
+            if self.note_ids.count(None) > len(self.note_ids) * 0.25:
                 self._rebuild_index()
             
             return True
@@ -268,112 +179,92 @@ class FaissRetriever:
     def _rebuild_index(self):
         """Rebuild the FAISS index after deletions."""
         # Filter out None values
-        valid_docs = [(i, doc, doc_id) for i, (doc, doc_id) in 
-                     enumerate(zip(self.documents, self.document_ids)) 
-                     if doc is not None]
+        valid_ids = [doc_id for doc_id in self.note_ids if doc_id is not None]
         
-        if not valid_docs:
+        if not valid_ids:
             # No documents left
             self.index = faiss.IndexFlatL2(self.embedding_dim)
-            self.documents = []
-            self.document_ids = []
+            self.note_ids = []
             return
-        
-        # Unpack the filtered data
-        indices, filtered_docs, filtered_ids = zip(*valid_docs)
         
         # Create new index
         new_index = faiss.IndexFlatL2(self.embedding_dim)
         
         # Add embeddings to new index
-        embeddings = self.model.encode(filtered_docs)
-        new_index.add(np.array(embeddings, dtype=np.float32))
+        for doc_id in valid_ids:
+            note = self.notes[doc_id]
+            embedding = self.embeddings.embed_query(note.content)
+            normalized_embedding = self._normalize_embedding(embedding)
+            new_index.add(np.array([normalized_embedding]))
         
         # Update instance variables
         self.index = new_index
-        self.documents = list(filtered_docs)
-        self.document_ids = list(filtered_ids)
+        self.note_ids = valid_ids
         
-        logger.info(f"FAISS index rebuilt with {len(self.documents)} documents")
+        logger.info(f"FAISS index rebuilt with {len(self.note_ids)} documents")
     
-    def search(self, query: str, k: int = 5, rerank: bool = None):
-        """Search for similar documents.
+    def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+        """Search for similar notes.
         
         Args:
             query: Query text
             k: Number of results to return
-            rerank: Whether to apply reranking (overrides instance setting if provided)
-            
+        
         Returns:
-            List of dicts with document content, metadata, and similarity score
+            List of dicts with note objects and similarity scores
         """
-        if not self.documents:
+        if not self.note_ids:
             return []
         
-        # Determine whether to use reranking
-        apply_reranking = self.use_reranker if rerank is None else rerank
-        
-        # Get more results if reranking to allow for filtering
-        search_k = k * 5 if apply_reranking else k
-        
-        # Get query embedding
-        query_embedding = self.model.encode([query])
+        # Get query embedding and normalize it
+        query_embedding = self.embeddings.embed_query(query)
+        normalized_query = self._normalize_embedding(query_embedding)
         
         # Search FAISS index
-        distances, indices = self.index.search(np.array(query_embedding, dtype=np.float32), min(search_k, len(self.documents)))
+        # Retrieve more results if reranking to ensure we have enough after filtering
+        search_k = min(k * 2 if self.use_reranker else k, len(self.note_ids))
+        distances, indices = self.index.search(np.array([normalized_query]), search_k)
         
         results = []
         for i, idx in enumerate(indices[0]):
-            if idx < len(self.documents) and idx >= 0:  # Valid index check
-                doc_id = self.document_ids[idx]
-                metadata = self.metadata_dict.get(doc_id, {})
+            if idx < len(self.note_ids) and idx >= 0:  # Valid index check
+                doc_id = self.note_ids[idx]
+                if doc_id is None:  # Skip deleted documents
+                    continue
                 
-                # Update retrieval count in metadata
-                if doc_id in self.metadata_dict:
-                    retrieval_count = self.metadata_dict[doc_id].get('retrieval_count', 0)
-                    self.metadata_dict[doc_id]['retrieval_count'] = retrieval_count + 1
-                    self.metadata_dict[doc_id]['last_accessed'] = datetime.now().isoformat()
+                note = self.notes[doc_id]
+                
+                # Update retrieval count and last accessed time
+                if hasattr(note, 'retrieval_count'):
+                    note.retrieval_count += 1
+                if hasattr(note, 'accessed_at'):
+                    note.accessed_at = datetime.now().isoformat()
+                
+                # Calculate similarity score (convert distance to similarity)
+                similarity_score = float(1.0 / (1.0 + distances[0][i]))
                 
                 results.append({
                     'id': doc_id,
-                    'content': self.documents[idx],
-                    'metadata': metadata,
-                    'score': float(1.0 / (1.0 + distances[0][i]))  # Convert distance to similarity score
+                    'note': note,
+                    'score': similarity_score
                 })
         
-        # Apply reranking if enabled
-        if apply_reranking and hasattr(self, 'reranker'):
+        # Apply reranking if enabled and we have results
+        if self.use_reranker and self.reranker and results:
             results = self.reranker.rerank(query, results)
         
         return results[:k]
     
-    # Add a method to configure the reranker
-    def configure_reranker(self, enable: bool = True, **kwargs):
-        """Configure the search reranker.
+    def get_note_by_id(self, doc_id: str) -> Optional[T]:
+        """Retrieve a note by its ID.
         
         Args:
-            enable: Whether to enable the reranker
-            **kwargs: Configuration parameters for the reranker
-        
+            doc_id: The ID of the note to retrieve
+            
         Returns:
-            bool: Whether the configuration was successful
+            The note object if found, None otherwise
         """
-        try:
-            self.use_reranker = enable
-            if enable:
-                if hasattr(self, 'reranker'):
-                    # Update existing reranker configuration
-                    for key, value in kwargs.items():
-                        if hasattr(self.reranker, key):
-                            setattr(self.reranker, key, value)
-                else:
-                    # Create new reranker
-                    self.reranker = SearchReranker(**kwargs)
-                logger.info("Search reranker configured")
-            return True
-        except Exception as e:
-            logger.error(f"Error configuring reranker: {e}")
-            return False
+        return self.notes.get(doc_id)
     
     def save_index(self, path: str = None):
         """Save the FAISS index and associated data to disk.
@@ -382,19 +273,20 @@ class FaissRetriever:
             path: Directory path to save the index
         """
         if path is None:
-            path = self.index_path or "faiss_index"
+            path = self.index_path
         
         os.makedirs(os.path.dirname(path), exist_ok=True)
         
         # Save FAISS index
         faiss.write_index(self.index, f"{path}.index")
         
-        # Save documents, IDs and metadata
+        # Save notes, IDs and metadata
         with open(f"{path}.data", 'wb') as f:
             pickle.dump({
-                'documents': self.documents,
-                'document_ids': self.document_ids,
-                'metadata': self.metadata_dict
+                'notes': self.notes,
+                'note_ids': self.note_ids,
+                'metadata': self.metadata_dict,
+                'class_name': self.class_name
             }, f)
         
         logger.info(f"FAISS index saved to {path}")
@@ -409,18 +301,94 @@ class FaissRetriever:
         self.index = faiss.read_index(f"{path}.index")
         self.index_path = path
         
-        # Load documents and metadata
+        # Load notes and metadata
         try:
             with open(f"{path}.data", 'rb') as f:
                 data = pickle.load(f)
-                self.documents = data['documents']
-                self.document_ids = data['document_ids']
+                self.notes = data['notes']
+                self.note_ids = data['note_ids']
                 self.metadata_dict = data['metadata']
+                loaded_class_name = data.get('class_name')
+                
+                # Verify the loaded data matches the expected note class
+                if loaded_class_name != self.class_name:
+                    logger.warning(f"Loaded index contains {loaded_class_name} notes, but this retriever is configured for {self.class_name}")
             
-            logger.info(f"Loaded FAISS index with {len(self.documents)} documents")
+            logger.info(f"Loaded FAISS index with {len(self.note_ids)} {self.class_name} notes")
         except (FileNotFoundError, KeyError) as e:
             logger.error(f"Error loading FAISS data: {e}")
             # Initialize empty data structures
-            self.documents = []
-            self.document_ids = []
+            self.notes = {}
+            self.note_ids = []
             self.metadata_dict = {}
+
+
+class CornellNoteRetriever(FaissRetriever[CornellMethodNote]):
+    """Specialized retriever for Cornell Method Notes"""
+    def __init__(self, model_name: str = 'nomic-embed-text', index_path: Optional[str] = None):
+        super().__init__(CornellMethodNote, model_name, index_path)
+        
+    def get_related_zettel_notes(self, cornell_note_id: str, zettel_retriever: 'ZettelNoteRetriever') -> List[ZettelNote]:
+        """Get all Zettel notes linked to a Cornell note.
+        
+        Args:
+            cornell_note_id: ID of the Cornell note
+            zettel_retriever: Retriever containing Zettel notes
+            
+        Returns:
+            List of linked Zettel notes
+        """
+        cornell_note = self.get_note_by_id(cornell_note_id)
+        if not cornell_note:
+            return []
+            
+        zettel_notes = []
+        for zettel_id in cornell_note.zettle_ids:
+            zettel_note = zettel_retriever.get_note_by_id(zettel_id)
+            if zettel_note:
+                zettel_notes.append(zettel_note)
+                
+        return zettel_notes
+
+
+class ZettelNoteRetriever(FaissRetriever[ZettelNote]):
+    """Specialized retriever for Zettel Notes"""
+    def __init__(self, model_name: str = 'nomic-embed-text', index_path: Optional[str] = None):
+        super().__init__(ZettelNote, model_name, index_path)
+        
+    def get_linked_notes(self, zettel_id: str) -> List[ZettelNote]:
+        """Get all Zettel notes linked to a specific Zettel note.
+        
+        Args:
+            zettel_id: ID of the Zettel note
+            
+        Returns:
+            List of linked Zettel notes
+        """
+        zettel_note = self.get_note_by_id(zettel_id)
+        if not zettel_note:
+            return []
+            
+        linked_notes = []
+        for linked_id in zettel_note.links:
+            linked_note = self.get_note_by_id(linked_id)
+            if linked_note:
+                linked_notes.append(linked_note)
+                
+        return linked_notes
+    
+    def get_parent_cornell_note(self, zettel_id: str, cornell_retriever: CornellNoteRetriever) -> Optional[CornellMethodNote]:
+        """Get the parent Cornell note of a Zettel note.
+        
+        Args:
+            zettel_id: ID of the Zettel note
+            cornell_retriever: Retriever containing Cornell notes
+            
+        Returns:
+            Parent Cornell note if found, None otherwise
+        """
+        zettel_note = self.get_note_by_id(zettel_id)
+        if not zettel_note or not zettel_note.cornell_id:
+            return None
+            
+        return cornell_retriever.get_note_by_id(zettel_note.cornell_id)

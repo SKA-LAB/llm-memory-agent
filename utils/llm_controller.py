@@ -79,6 +79,7 @@ class OllamaController(BaseLLMController):
                     {"role": "user", "content": prompt}
                 ],
                 response_format=response_format,
+                num_ctx=100000
             )
             return response.choices[0].message.content
         except Exception as e:
