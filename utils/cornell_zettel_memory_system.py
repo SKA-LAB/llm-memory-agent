@@ -27,6 +27,7 @@ class CornellMethodNote(BaseModel):
     note_simple: CornellSimple
     content: str  # string representation of the CornellSimple object
     zettle_ids: List[str] = []
+    source_id: str = None  # ID of the source document that this cornell method note is generated from
 
 
 class ZettelNote(BaseModel):

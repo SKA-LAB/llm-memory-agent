@@ -19,42 +19,114 @@ class NoteProcessor:
         cornell_retriever: Optional[CornellNoteRetriever] = None,
         zettel_retriever: Optional[ZettelNoteRetriever] = None
     ):
-        """
-        Initialize the NoteProcessor with retrievers for Cornell and Zettel notes.
-        
-        Args:
-            cornell_retriever: Retriever for Cornell notes
-            zettel_retriever: Retriever for Zettel notes
-        """
+        # redacted
         self.cornell_retriever = cornell_retriever
         self.zettel_retriever = zettel_retriever
     
-    def process_text(self, text: str) -> Tuple[CornellMethodNote, List[ZettelNote]]:
+    def process_text(self, text: str, source_id: Optional[str] = None) -> Tuple[CornellMethodNote, List[ZettelNote]]:
         """
-        Process a block of text to create a Cornell note and associated Zettel notes,
-        find similar notes, establish links, and save to indices.
+        Process text to create Cornell and Zettel notes.
         
         Args:
             text: The text to process
+            source_id: Optional ID of the source document
             
         Returns:
-            A tuple containing the created Cornell note and list of Zettel notes
+            A tuple containing the Cornell note and a list of Zettel notes
         """
-        # Step 1: Create Cornell note from text
-        cornell_note = generate_cornell_method_note(text)
+        # Create Cornell note
+        cornell_note = self._create_cornell_note(text)
         
-        # Step 2: Generate Zettel notes from Cornell note
-        zettel_notes = get_Zettel_notes(cornell_note)
+        # Set source_id if provided
+        if source_id:
+            cornell_note.source_id = source_id
         
-        # Step 3: Find similar notes and establish links if retriever is available
-        if self.zettel_retriever is not None:
-            for zettel_note in zettel_notes:
-                self._establish_links(zettel_note)
+        # Create Zettel notes
+        zettel_notes = self._create_zettel_notes(cornell_note)
         
-        # Step 4: Save notes to indices if retrievers are available
+        # Establish links between notes
+        for zettel_note in zettel_notes:
+            self._establish_links(zettel_note)
+        
+        # Save notes to indices
         self._save_notes(cornell_note, zettel_notes)
         
         return cornell_note, zettel_notes
+    
+    def process_text_batch(self, texts: List[str], source_ids: Optional[List[str]] = None) -> List[Tuple[CornellMethodNote, List[ZettelNote]]]:
+        """
+        Process a batch of texts to create Cornell and Zettel notes.
+        
+        Args:
+            texts: List of texts to process
+            source_ids: Optional list of source document IDs corresponding to each text
+            
+        Returns:
+            List of tuples containing Cornell notes and their associated Zettel notes
+        """
+        results = []
+        
+        for i, text in enumerate(texts):
+            source_id = None
+            if source_ids and i < len(source_ids):
+                source_id = source_ids[i]
+            
+            cornell_note, zettel_notes = self.process_text(text, source_id)
+            results.append((cornell_note, zettel_notes))
+        
+        return results
+    
+    def get_notes_by_source(self, source_id: str) -> List[Tuple[CornellMethodNote, List[ZettelNote]]]:
+        """
+        Retrieve all notes associated with a specific source document.
+        
+        Args:
+            source_id: ID of the source document
+            
+        Returns:
+            List of tuples containing Cornell notes and their associated Zettel notes
+        """
+        if not self.cornell_retriever:
+            return []
+        
+        results = []
+        cornell_notes = self.cornell_retriever.get_notes_by_source_id(source_id)
+        
+        for cornell_note in cornell_notes:
+            zettel_notes = []
+            if self.zettel_retriever:
+                for zettel_id in cornell_note.zettle_ids:
+                    zettel_note = self.zettel_retriever.get_note_by_id(zettel_id)
+                    if zettel_note:
+                        zettel_notes.append(zettel_note)
+            
+            results.append((cornell_note, zettel_notes))
+        
+        return results
+    
+    def _create_cornell_note(self, text: str) -> CornellMethodNote:
+        """
+        Create a Cornell note from the given text.
+        
+        Args:
+            text: The text to create a Cornell note from
+            
+        Returns:
+            A CornellMethodNote object
+        """
+        return generate_cornell_method_note(text)
+    
+    def _create_zettel_notes(self, cornell_note: CornellMethodNote) -> List[ZettelNote]:
+        """
+        Create Zettel notes from a Cornell note.
+        
+        Args:
+            cornell_note: The Cornell note to create Zettel notes from
+            
+        Returns:
+            A list of ZettelNote objects
+        """
+        return get_Zettel_notes(cornell_note)
     
     def _establish_links(self, zettel_note: ZettelNote) -> None:
         """

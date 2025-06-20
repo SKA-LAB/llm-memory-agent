@@ -349,6 +349,53 @@ class CornellNoteRetriever(FaissRetriever[CornellMethodNote]):
                 zettel_notes.append(zettel_note)
                 
         return zettel_notes
+    
+    def get_notes_by_source_id(self, source_id: str) -> List[CornellMethodNote]:
+        """Get all Cornell notes that were generated from a specific source document.
+        
+        Args:
+            source_id: ID of the source document
+            
+        Returns:
+            List of Cornell notes generated from the source
+        """
+        notes_from_source = []
+        for note_id, note in self.notes.items():
+            if note.source_id == source_id:
+                notes_from_source.append(note)
+        
+        return notes_from_source
+    
+    def update_source_id(self, note_id: str, source_id: str) -> bool:
+        """Update the source_id of a Cornell note.
+        
+        Args:
+            note_id: ID of the Cornell note to update
+            source_id: New source ID to set
+            
+        Returns:
+            Whether the update was successful
+        """
+        note = self.get_note_by_id(note_id)
+        if note:
+            note.source_id = source_id
+            # Update the metadata dictionary as well
+            if note_id in self.metadata_dict:
+                self.metadata_dict[note_id]['source_id'] = source_id
+            return True
+        return False
+    
+    def get_source_id(self, note_id: str) -> Optional[str]:
+        """Get the source_id of a Cornell note.
+        
+        Args:
+            note_id: ID of the Cornell note
+            
+        Returns:
+            The source_id if found, None otherwise
+        """
+        note = self.get_note_by_id(note_id)
+        return note.source_id if note else None
 
 
 class ZettelNoteRetriever(FaissRetriever[ZettelNote]):
