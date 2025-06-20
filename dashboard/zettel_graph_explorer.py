@@ -20,7 +20,7 @@ from utils.community_detector import ZettelCommunityDetector
 
 # Import MarkItDown for document conversion
 try:
-    import markitdown
+    from markitdown import MarkItDown
 except ImportError:
     st.error("MarkItDown library is not installed. Please install it using: pip install markitdown")
     st.stop()
@@ -197,7 +197,9 @@ def convert_to_markdown(file_path):
     """Convert a file to markdown using MarkItDown"""
     try:
         # Use MarkItDown to convert the file to markdown
-        markdown_content = markitdown.markitdown(file_path)
+        md = MarkItDown(enable_plugins=False)
+        result = md.convert(file_path)
+        markdown_content = result.text_content
         return markdown_content
     except Exception as e:
         st.error(f"Error converting file {file_path}: {str(e)}")
