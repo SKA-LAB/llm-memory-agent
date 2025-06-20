@@ -322,6 +322,37 @@ class FaissRetriever(Generic[T]):
             self.note_ids = []
             self.metadata_dict = {}
 
+    def update_note(self, note: T) -> bool:
+        """Update an existing note in the index.
+        
+        Args:
+            note: The updated note object
+        
+        Returns:
+            True if the note was updated, False otherwise
+        """
+        doc_id = note.id
+        
+        # Check if the note exists
+        if doc_id not in self.notes:
+            logger.warning(f"Note with ID {doc_id} not found in index")
+            return False
+        
+        # Update the note object
+        self.notes[doc_id] = note
+        
+        # Update metadata
+        metadata = note.model_dump()
+        if 'content' in metadata:
+            metadata['content_preview'] = metadata['content'][:100] + "..." if len(metadata['content']) > 100 else metadata['content']
+        self.metadata_dict[doc_id] = metadata
+        
+        # No need to update the embedding as the content hasn't changed
+        # If content has changed significantly, it's better to delete and re-add the note
+        
+        logger.info(f"Note with ID {doc_id} updated in index")
+        return True
+
 
 class CornellNoteRetriever(FaissRetriever[CornellMethodNote]):
     """Specialized retriever for Cornell Method Notes"""
@@ -439,3 +470,20 @@ class ZettelNoteRetriever(FaissRetriever[ZettelNote]):
             return None
             
         return cornell_retriever.get_note_by_id(zettel_note.cornell_id)
+    
+    def get_notes_by_type(self, note_type: str) -> List[ZettelNote]:
+        """
+        Get all notes of a specific type.
+        
+        Args:
+            note_type: Type of notes to retrieve (e.g., "synthesis", "standard")
+            
+        Returns:
+            List of ZettelNote objects of the specified type
+        """
+        result = []
+        for note_id in self.note_ids:
+            note = self.get_note_by_id(note_id)
+            if note and note.type == note_type:
+                result.append(note)
+        return result

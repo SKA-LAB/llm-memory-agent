@@ -15,7 +15,7 @@ class ZettelSimple(BaseModel):
     title: str
     keywords: List[str]
     body: str
-    source: str
+    source: Optional[str] = None
 
 
 class CornellMethodNote(BaseModel):
@@ -28,20 +28,45 @@ class CornellMethodNote(BaseModel):
     content: str  # string representation of the CornellSimple object
     zettle_ids: List[str] = []
     source_id: str = None  # ID of the source document that this cornell method note is generated from
+    
+    @property
+    def title(self) -> str:
+        """Get a title for the Cornell note based on the summary"""
+        if hasattr(self.note_simple, 'summary'):
+            # Extract first sentence or first 50 characters from summary
+            summary = self.note_simple.summary
+            title = summary.split('.')[0] if '.' in summary else summary[:50]
+            return title + ("..." if len(title) >= 50 else "")
+        return f"Cornell Note {self.id[:8]}"
+    
+    @property
+    def summary(self) -> str:
+        """Get the summary from the Cornell note"""
+        if hasattr(self.note_simple, 'summary'):
+            return self.note_simple.summary
+        return ""
 
 
 class ZettelNote(BaseModel):
     """A Zettel note that represents a single unit of information in the memory system."""
-    id: str = uuid.uuid4().hex
+    id: str
     created_at: datetime = datetime.now().isoformat()
     accessed_at: Optional[datetime] = None
     note_simple: ZettelSimple
     content: str  # string representation of the ZettelSimple object
-    type: str = "main"  # or "synthesis"
+    type: str = "standard"
     links: List[str] = []
     tags: List[str] = []
     retrieval_count: int = 0
     cornell_id: str = None
+    metadata: Optional[Dict[str, Any]] = None
+    
+    @property
+    def title(self) -> str:
+        """Get the title from the Zettel note"""
+        if hasattr(self.note_simple, 'title'):
+            return self.note_simple.title
+        return f"Zettel Note {self.id[:8]}"
 
 
 def generate_cornell_method_note(text: str) -> CornellMethodNote:
@@ -102,7 +127,7 @@ Each Zettel should represent a single, distinct idea and have the following sect
 
 1.  **Title:** A concise, informative title that captures the essence of the information.
 2.  **Keywords:** A list of important words or phrases that describe the content of the note.
-3.  **Body:** A brief, self-contained paragprah, often with a specific idea or concept.
+3.  **Body:** A brief, self-contained paragpraph, often with a specific idea or concept.
 4.  **Source:** The original source of the information.
 
 Separate each generated Zettel note with '---ZETTEL_SEPARATOR---'. Do not include any other text before the first Zettel or after the last one.
@@ -127,3 +152,36 @@ def parse_Zettel_response(response: str) -> List[str]:
             current_note += line + "\n"
     if current_note:
         zettel_notes.append(current_note)
+
+
+def get_synthesis_zettel_prompt(zettle_notes: List[ZettelNote]) -> str:
+    prompt = f"""
+Generate a synthesis Zettel for the following set of Zettel notes:
+
+---START ZETTLES---
+{"\n------\n------\n".join([note.content for note in zettle_notes])}
+---END ZETTLES---
+
+The synthesis Zettel identify the common theme in the set of notes above and should include the following sections:
+
+1.  **Title:** A concise, informative title that captures the essence of the information.
+2.  **Keywords:** A list of important words or phrases that describe the content of the note.
+3.  **Body:** A brief, self-contained paragpraph, often with a specific idea or concept.
+4.  **Source:** The original source of the information.
+"""
+    return prompt
+
+
+def generate_synthesis_zettel(zettle_notes: List[ZettelNote]) -> ZettelNote:
+    prompt = get_synthesis_zettel_prompt(zettle_notes)
+    llm = get_llm()
+    response = llm.invoke(prompt).content
+    simple_note = parse_to_json(response.strip(), ZettelSimple)
+    synthesis_note_text = f"Title: {simple_note.title}\nKeywords: {simple_note.keywords}\nBody: {simple_note.body}\nSource: {simple_note.source}"
+    synthesis_note = ZettelNote(
+        note_simple = simple_note,
+        content = synthesis_note_text,
+        type = "synthesis",
+        links = [note.id for note in zettle_notes]
+    )
+    return synthesis_note
