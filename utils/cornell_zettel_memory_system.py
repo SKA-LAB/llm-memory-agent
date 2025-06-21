@@ -2,7 +2,7 @@ from typing import List, Dict, Optional, Any, Tuple
 import uuid
 from datetime import datetime
 from pydantic import BaseModel
-from init_llm import get_llm, parse_to_json
+from .init_llm import get_llm, parse_to_json
 
 
 class CornellSimple(BaseModel):
