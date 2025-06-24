@@ -197,15 +197,21 @@ def convert_to_markdown(file_path):
     """Convert a file to markdown using MarkItDown"""
     try:
         # Use MarkItDown to convert the file to markdown
-        md = MarkItDown(enable_plugins=False)
-        result = md.convert(file_path)
-        markdown_content = result.text_content
-        return markdown_content
+        if not os.path.basename(file_path).endswith(('.txt', '.md')):
+            md = MarkItDown(enable_plugins=False)
+            result = md.convert(file_path)
+            markdown_content = result.text_content
+            return markdown_content
+        else:
+            # If the file is already markdown, simply read it as utf8
+            with open(file_path, 'r', encoding='utf8') as f:
+                markdown_content = f.read()
+                return markdown_content
     except Exception as e:
         st.error(f"Error converting file {file_path}: {str(e)}")
         return None
 
-def chunk_text(text, chunk_size=1000, overlap=200):
+def chunk_text(text, chunk_size=5000, overlap=500):
     """Split text into chunks with overlap"""
     chunks = []
     start = 0
@@ -271,7 +277,7 @@ def process_files(files, index_name):
                     status_text.text(f"Processing file {i+1}/{len(files)}: {file.name} - Chunk {j+1}/{len(chunks)}")
                     
                     # Process the chunk to create Cornell and Zettel notes
-                    processor.process_text(chunk, title=chunk_title, source_id=file.name)
+                    processor.process_text(chunk, source_title=chunk_title, source_id=file.name)
             
             # Clean up the temporary file
             os.unlink(tmp_path)

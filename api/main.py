@@ -19,6 +19,7 @@ app = FastAPI(
 class TextProcessRequest(BaseModel):
     text: str
     source_id: Optional[str] = None
+    source_title: Optional[str] = None
     index_name: str = "default"
 
 class BatchProcessRequest(BaseModel):
@@ -100,7 +101,11 @@ async def process_text(request: TextProcessRequest):
     processor = get_or_create_note_processor(request.index_name)
     
     # Process the text
-    cornell_note, zettel_notes = processor.process_text(request.text, request.source_id)
+    cornell_note, zettel_notes = processor.process_text(
+        request.text, 
+        request.source_id, 
+        request.source_title if hasattr(request, 'source_title') else None
+    )
     
     # Update metadata
     from datetime import datetime
@@ -197,7 +202,9 @@ async def get_notes_by_source(index_name: str, source_id: str):
                 "id": cornell_note.id,
                 "title": cornell_note.title,
                 "content": cornell_note.content,
-                "summary": cornell_note.summary
+                "summary": cornell_note.summary,
+                "source_id": cornell_note.source_id,
+                "source_title": cornell_note.source_title
             },
             "zettel_notes": [
                 {

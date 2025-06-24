@@ -6,8 +6,7 @@ import os
 import json
 import logging
 
-from .retrievers import CornellNoteRetriever, ZettelNoteRetriever
-from .cornell_zettel_memory_system import CornellMethodNote, ZettelNote
+from utils.retrievers import CornellNoteRetriever, ZettelNoteRetriever
 
 logger = logging.getLogger(__name__)
 

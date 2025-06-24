@@ -3,8 +3,8 @@ from typing import List, Dict, Set, Optional
 import logging
 from collections import defaultdict
 
-from .retrievers import ZettelNoteRetriever
-from .cornell_zettel_memory_system import ZettelNote, generate_synthesis_zettel
+from utils.retrievers import ZettelNoteRetriever
+from utils.cornell_zettel_memory_system import ZettelNote, generate_synthesis_zettel
 
 logger = logging.getLogger(__name__)
 
