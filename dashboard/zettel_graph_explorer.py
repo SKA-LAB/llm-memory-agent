@@ -237,6 +237,7 @@ def process_files(files, index_name):
     # Create or get the note processor for this index
     processor = get_note_processor(index_name)
     if not processor:
+        print(f"Note processor for index {index_name} does not exist. Creating...")
         # Create the index directory
         index_dir = INDICES_DIR / index_name
         index_dir.mkdir(exist_ok=True, parents=True)
@@ -251,6 +252,8 @@ def process_files(files, index_name):
         
         # Create note processor
         processor = NoteProcessor(cornell_retriever=cornell_retriever, zettel_retriever=zettel_retriever)
+    else:
+        print(f"Note processor for index {index_name} already exists")
     
     # Process each file
     progress_bar = st.progress(0)

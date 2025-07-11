@@ -4,6 +4,7 @@ from datetime import datetime
 import logging
 from pydantic import BaseModel
 from utils.init_llm import get_llm, parse_to_json
+import time  # Add time module for timing operations
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -25,8 +26,8 @@ class ZettelSimple(BaseModel):
 class CornellMethodNote(BaseModel):
     """A Cornell Method note that represents a single unit of information in the memory system."""
     id: str = uuid.uuid4().hex
-    created_at: datetime = datetime.now().isoformat()
-    accessed_at: Optional[datetime] = None
+    created_at: str = datetime.now().isoformat()
+    accessed_at: Optional[str] = None
     retrieval_count: int = 0
     note_simple: CornellSimple
     content: str  # string representation of the CornellSimple object
@@ -59,8 +60,8 @@ class CornellMethodNote(BaseModel):
 class ZettelNote(BaseModel):
     """A Zettel note that represents a single unit of information in the memory system."""
     id: str
-    created_at: datetime = datetime.now().isoformat()
-    accessed_at: Optional[datetime] = None
+    created_at: str = datetime.now().isoformat()
+    accessed_at: Optional[str] = None
     note_simple: ZettelSimple
     content: str  # string representation of the ZettelSimple object
     type: str = "standard"
@@ -84,22 +85,29 @@ def generate_cornell_method_note(text: str) -> CornellMethodNote:
     logger.info("Generating Cornell method note from text")
     logger.debug(f"Input text length: {len(text)} characters")
     
+    start_time = time.time()  # Start timing
     prompt = get_cornell_method_prompt(text)
     llm = get_llm()
     
     logger.debug("Sending prompt to LLM for Cornell note generation")
+    llm_start_time = time.time()  # Time the LLM call specifically
     response = llm.invoke(prompt).content
+    llm_duration = time.time() - llm_start_time
+    logger.debug(f"LLM response received in {llm_duration:.2f} seconds")
     
     try:
+        parse_start_time = time.time()  # Time the parsing operation
         cornell_simple = parse_to_json(response, CornellSimple)
-        logger.debug("Successfully parsed LLM response to CornellSimple")
+        parse_duration = time.time() - parse_start_time
+        logger.debug(f"Parsed LLM response to CornellSimple in {parse_duration:.2f} seconds")
         
         text_content = f"Main body:\n{cornell_simple.main_note}\n\nQuestions:\n{cornell_simple.questions}\n\nSummary:\n{cornell_simple.summary}"
         cornell_note = CornellMethodNote(
             note_simple=cornell_simple,
             content=text_content
         )
-        logger.info(f"Created Cornell note with ID: {cornell_note.id}")
+        total_duration = time.time() - start_time
+        logger.info(f"Created Cornell note with ID: {cornell_note.id} in {total_duration:.2f} seconds")
         return cornell_note
     except Exception as e:
         logger.error(f"Error parsing Cornell note from LLM response: {e}")
@@ -109,7 +117,7 @@ def generate_cornell_method_note(text: str) -> CornellMethodNote:
 def get_cornell_method_prompt(text: str) -> str:
     logger.debug("Creating Cornell method prompt")
     prompt = f"""
-Analyze the following text and structure it into a comprehensive Cornell Method note.
+Analyze the following text and structure it into a comprehensive note.
 Your output must be in a clean, easily parsable format with three distinct, clearly labeled sections:
 
 1.  **## Main Notes:** A detailed, point-by-point breakdown of the key information and concepts.
@@ -122,23 +130,56 @@ Here is the text to process:
     return prompt
 
 
-def get_Zettel_notes(cornell_note: CornellMethodNote) -> List[ZettelNote]:
+def get_Zettel_notes(cornell_note: CornellMethodNote, retries: int=2) -> List[ZettelNote]:
+    start_time = time.time()  # Start timing
     logger.info(f"Generating Zettel notes from Cornell note {cornell_note.id}")
     
     cornell_text_content = cornell_note.content.strip()
+    if len(cornell_text_content) < 30:
+        logger.info("Cornell note content is too short, skipping Zettel note generation")
+        return []
+    
+    prompt_start_time = time.time()
     prompt = get_Zettel_prompt(cornell_text_content)
+    prompt_duration = time.time() - prompt_start_time
+    logger.debug(f"Created Zettel prompt in {prompt_duration:.2f} seconds")
+    
     llm = get_llm()
     
     logger.debug("Sending prompt to LLM for Zettel notes generation")
+    llm_start_time = time.time()  # Time the LLM call specifically
     response = llm.invoke(prompt).content
+    llm_duration = time.time() - llm_start_time
+    logger.debug(f"LLM response received in {llm_duration:.2f} seconds")
     
     try:
-        Zettel_note_texts = parse_Zettel_response(response)
-        logger.debug(f"Parsed {len(Zettel_note_texts)} Zettel notes from LLM response")
+        attempt = 0
+        Zettel_note_texts = []
+        parsing_start_time = time.time()
+        while len(Zettel_note_texts) < 1 or attempt < retries:
+            retry_start_time = time.time()
+            Zettel_note_texts = parse_Zettel_response(response)
+            attempt += 1
+            if len(Zettel_note_texts) == 0 and attempt < retries:
+                logger.info(f"No Zettel notes found in LLM response, retrying zettel generation...")
+                retry_llm_start = time.time()
+                response = llm.invoke(prompt).content
+                retry_llm_duration = time.time() - retry_llm_start
+                logger.debug(f"Retry {attempt} LLM response received in {retry_llm_duration:.2f} seconds")
+            elif len(Zettel_note_texts) == 0:
+                logger.info("No Zettel notes found in LLM response after multiple attempts at generation, skipping Zettel note generation")
+                return []
+            retry_duration = time.time() - retry_start_time
+            logger.debug(f"Attempt {attempt} completed in {retry_duration:.2f} seconds")
+        
+        parsing_duration = time.time() - parsing_start_time
+        logger.debug(f"Parsed {len(Zettel_note_texts)} Zettel notes from LLM response in {parsing_duration:.2f} seconds")
         
         Zettel_notes = []
+        processing_start_time = time.time()
         
         for i, note_text in enumerate(Zettel_note_texts):
+            note_start_time = time.time()
             try:
                 Zettel_note_simple = parse_to_json(note_text, ZettelSimple)
                 note_text = f"Title: {Zettel_note_simple.title}\nKeywords: {Zettel_note_simple.keywords}\nBody: {Zettel_note_simple.body}\nSource: {Zettel_note_simple.source}"
@@ -153,25 +194,30 @@ def get_Zettel_notes(cornell_note: CornellMethodNote) -> List[ZettelNote]:
                 
                 Zettel_notes.append(this_Zettel)
                 cornell_note.zettle_ids.append(this_Zettel.id)
-                logger.debug(f"Created Zettel note {i+1}/{len(Zettel_note_texts)} with ID: {this_Zettel.id}")
+                note_duration = time.time() - note_start_time
+                logger.debug(f"Created Zettel note {i+1}/{len(Zettel_note_texts)} with ID: {this_Zettel.id} in {note_duration:.2f} seconds")
             except Exception as e:
-                logger.error(f"Error parsing Zettel note {i+1}: {e}")
+                note_duration = time.time() - note_start_time
+                logger.error(f"Error parsing Zettel note {i+1} after {note_duration:.2f} seconds: {e}")
         
-        logger.info(f"Successfully created {len(Zettel_notes)} Zettel notes from Cornell note {cornell_note.id}")
+        processing_duration = time.time() - processing_start_time
+        total_duration = time.time() - start_time
+        logger.info(f"Successfully created {len(Zettel_notes)} Zettel notes from Cornell note {cornell_note.id} in {total_duration:.2f} seconds (processing: {processing_duration:.2f}s)")
         return Zettel_notes
     except Exception as e:
-        logger.error(f"Error generating Zettel notes: {e}")
+        total_duration = time.time() - start_time
+        logger.error(f"Error generating Zettel notes after {total_duration:.2f} seconds: {e}")
         return []
 
 
 def get_Zettel_prompt(cornell_note_content: str) -> str:
     logger.debug("Creating Zettel prompt")
     prompt = f"""
-Take the following Cornell Note and break it down into multiple, atomic Zettelkasten notes:
+Take the following note and break it down into multiple, atomic Zettels:
 
----START CORNELL NOTE---
+---START NOTE---
 {cornell_note_content}
----END CORNELL NOTE---
+---END NOTE---
 
 Each Zettel should represent a single, distinct idea and have the following sections:
 
@@ -236,21 +282,31 @@ The synthesis Zettel identify the common theme in the set of notes above and sho
 
 
 def generate_synthesis_zettel(zettle_notes: List[ZettelNote]) -> ZettelNote:
+    start_time = time.time()  # Start timing
     logger.info(f"Generating synthesis Zettel from {len(zettle_notes)} notes")
     
     if not zettle_notes:
         logger.warning("Cannot generate synthesis Zettel: no input notes provided")
         return None
     
+    prompt_start_time = time.time()
     prompt = get_synthesis_zettel_prompt(zettle_notes)
+    prompt_duration = time.time() - prompt_start_time
+    logger.debug(f"Created synthesis Zettel prompt in {prompt_duration:.2f} seconds")
+    
     llm = get_llm()
     
     logger.debug("Sending prompt to LLM for synthesis Zettel generation")
+    llm_start_time = time.time()  # Time the LLM call specifically
     response = llm.invoke(prompt).content
+    llm_duration = time.time() - llm_start_time
+    logger.debug(f"LLM response received in {llm_duration:.2f} seconds")
     
     try:
+        parse_start_time = time.time()
         simple_note = parse_to_json(response.strip(), ZettelSimple)
-        logger.debug("Successfully parsed LLM response to ZettelSimple")
+        parse_duration = time.time() - parse_start_time
+        logger.debug(f"Successfully parsed LLM response to ZettelSimple in {parse_duration:.2f} seconds")
         
         synthesis_note_text = f"Title: {simple_note.title}\nKeywords: {simple_note.keywords}\nBody: {simple_note.body}\nSource: {simple_note.source}"
         synthesis_note = ZettelNote(
@@ -261,8 +317,10 @@ def generate_synthesis_zettel(zettle_notes: List[ZettelNote]) -> ZettelNote:
             links=[note.id for note in zettle_notes]
         )
         
-        logger.info(f"Created synthesis Zettel note with ID: {synthesis_note.id}")
+        total_duration = time.time() - start_time
+        logger.info(f"Created synthesis Zettel note with ID: {synthesis_note.id} in {total_duration:.2f} seconds")
         return synthesis_note
     except Exception as e:
-        logger.error(f"Error generating synthesis Zettel: {e}")
+        total_duration = time.time() - start_time
+        logger.error(f"Error generating synthesis Zettel after {total_duration:.2f} seconds: {e}")
         raise

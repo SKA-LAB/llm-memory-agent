@@ -12,3 +12,4 @@ uvicorn
 requests
 python-multipart
 numpy
+coverage

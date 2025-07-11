@@ -2,6 +2,7 @@ import networkx as nx
 from typing import List, Dict, Set, Optional
 import logging
 from collections import defaultdict
+import matplotlib.pyplot as plt
 
 from utils.retrievers import ZettelNoteRetriever
 from utils.cornell_zettel_memory_system import ZettelNote, generate_synthesis_zettel
@@ -201,8 +202,6 @@ class ZettelCommunityDetector:
             output_path: Path to save the visualization (if None, displays interactively)
         """
         try:
-            import matplotlib.pyplot as plt
-            
             G = self.build_graph()
             communities = self.detect_communities()
             

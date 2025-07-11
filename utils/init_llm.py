@@ -2,7 +2,7 @@ from langchain_ollama import ChatOllama
 from ollama import chat
 from pydantic import BaseModel
 
-def get_llm(model: str="qwen2.5:3b", temperature: float=0.7) -> ChatOllama:
+def get_llm(model: str="llama3.2", temperature: float=0.7) -> ChatOllama:
     return ChatOllama(
         model=model,
         temperature=temperature,

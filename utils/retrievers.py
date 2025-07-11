@@ -8,6 +8,7 @@ from datetime import datetime
 import logging
 from langchain_ollama import OllamaEmbeddings
 from pydantic import BaseModel
+import time
 
 # Import the note types from cornell_zettel_memory_system
 from utils.cornell_zettel_memory_system import CornellMethodNote, ZettelNote
@@ -131,6 +132,7 @@ class FaissRetriever(Generic[T]):
     
     def add_document(self, note: T, doc_id: str = None) -> str:
         """Add a note to the FAISS index."""
+        start_time_total = time.time()
         # Use the note's ID if no doc_id is provided
         if doc_id is None:
             doc_id = note.id
@@ -158,12 +160,24 @@ class FaissRetriever(Generic[T]):
             logger.debug(f"Stored metadata for document {doc_id}")
             
             # Generate embedding, normalize it, and add to index
+            start_time_embedding = time.time()
             logger.debug(f"Generating embedding for document {doc_id}")
             embedding = self.embeddings.embed_query(content)
-            normalized_embedding = self._normalize_embedding(embedding)
-            self.index.add(np.array([normalized_embedding]))
+            embedding_time = time.time() - start_time_embedding
+            logger.debug(f"Embedding generation took {embedding_time:.6f} seconds")
             
-            logger.info(f"Successfully added document {doc_id} to index")
+            start_time_normalize = time.time()
+            normalized_embedding = self._normalize_embedding(embedding)
+            normalize_time = time.time() - start_time_normalize
+            logger.debug(f"Embedding normalization took {normalize_time:.6f} seconds")
+            
+            start_time_index = time.time()
+            self.index.add(np.array([normalized_embedding]))
+            index_time = time.time() - start_time_index
+            logger.debug(f"Adding to index took {index_time:.6f} seconds")
+            
+            total_time = time.time() - start_time_total
+            logger.info(f"Successfully added document {doc_id} to index in {total_time:.6f} seconds")
             return doc_id
         except Exception as e:
             logger.error(f"Error adding document {doc_id} to index: {str(e)}")
@@ -214,6 +228,7 @@ class FaissRetriever(Generic[T]):
     
     def _rebuild_index(self):
         """Rebuild the FAISS index after deletions."""
+        start_time_total = time.time()
         logger.info("Rebuilding FAISS index")
         
         try:
@@ -233,24 +248,38 @@ class FaissRetriever(Generic[T]):
             new_index = faiss.IndexFlatL2(self.embedding_dim)
             
             # Add embeddings to new index
+            total_embedding_time = 0
             for i, doc_id in enumerate(valid_ids):
                 logger.debug(f"Re-adding document {doc_id} ({i+1}/{len(valid_ids)})")
                 note = self.notes[doc_id]
+                
+                start_time_embedding = time.time()
                 embedding = self.embeddings.embed_query(note.content)
+                embedding_time = time.time() - start_time_embedding
+                total_embedding_time += embedding_time
+                
+                start_time_normalize = time.time()
                 normalized_embedding = self._normalize_embedding(embedding)
+                normalize_time = time.time() - start_time_normalize
+                
                 new_index.add(np.array([normalized_embedding]))
+                logger.debug(f"Document {doc_id} re-added (embedding: {embedding_time:.6f}s, normalize: {normalize_time:.6f}s)")
             
             # Update instance variables
             self.index = new_index
             self.note_ids = valid_ids
             
-            logger.info(f"FAISS index successfully rebuilt with {len(self.note_ids)} documents")
+            total_time = time.time() - start_time_total
+            avg_embedding_time = total_embedding_time / len(valid_ids) if valid_ids else 0
+            logger.info(f"FAISS index successfully rebuilt with {len(self.note_ids)} documents in {total_time:.6f} seconds")
+            logger.debug(f"Average embedding time per document: {avg_embedding_time:.6f} seconds")
         except Exception as e:
             logger.error(f"Error rebuilding FAISS index: {str(e)}")
             raise
     
     def search(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
         """Search for similar notes."""
+        start_time_total = time.time()
         logger.info(f"Searching for query: '{query[:50]}...' with k={k}")
         
         if not self.note_ids:
@@ -259,18 +288,24 @@ class FaissRetriever(Generic[T]):
         
         try:
             # Get query embedding and normalize it
+            start_time_embedding = time.time()
             logger.debug("Generating embedding for query")
             query_embedding = self.embeddings.embed_query(query)
             normalized_query = self._normalize_embedding(query_embedding)
+            embedding_time = time.time() - start_time_embedding
+            logger.debug(f"Query embedding generation took {embedding_time:.6f} seconds")
             
             # Search FAISS index
             # Retrieve more results if reranking to ensure we have enough after filtering
             search_k = min(k * 2 if self.use_reranker else k, len(self.note_ids))
             logger.debug(f"Searching index with k={search_k} (internal)")
             
+            start_time_faiss = time.time()
             distances, indices = self.index.search(np.array([normalized_query]), search_k)
-            logger.debug(f"FAISS search returned {len(indices[0])} results")
+            faiss_search_time = time.time() - start_time_faiss
+            logger.debug(f"FAISS search took {faiss_search_time:.6f} seconds, returned {len(indices[0])} results")
             
+            start_time_processing = time.time()
             results = []
             for i, idx in enumerate(indices[0]):
                 if idx < len(self.note_ids) and idx >= 0:  # Valid index check
@@ -299,16 +334,21 @@ class FaissRetriever(Generic[T]):
                     })
                     logger.debug(f"Added result {doc_id} with score {similarity_score:.4f}")
             
+            processing_time = time.time() - start_time_processing
+            logger.debug(f"Result processing took {processing_time:.6f} seconds")
             logger.debug(f"Collected {len(results)} valid results before reranking")
             
             # Apply reranking if enabled and we have results
             if self.use_reranker and self.reranker and results:
+                start_time_reranking = time.time()
                 logger.debug("Applying reranking to search results")
                 results = self.reranker.rerank(query, results)
-                logger.debug("Reranking complete")
+                reranking_time = time.time() - start_time_reranking
+                logger.debug(f"Reranking complete in {reranking_time:.6f} seconds")
             
             final_results = results[:k]
-            logger.info(f"Search complete, returning {len(final_results)} results")
+            total_time = time.time() - start_time_total
+            logger.info(f"Search complete in {total_time:.6f} seconds, returning {len(final_results)} results")
             return final_results
         except Exception as e:
             logger.error(f"Error during search: {str(e)}")
