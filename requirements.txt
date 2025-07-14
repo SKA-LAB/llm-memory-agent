@@ -1,4 +1,5 @@
 langchain-ollama
+langchain-openai
 faiss-cpu
 pydantic
 ollama

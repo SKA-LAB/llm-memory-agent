@@ -284,20 +284,29 @@ class TestFaissRetriever(unittest.TestCase):
             mock_file.assert_called_once()
         
         # Create a new retriever and load the index
-        with patch('utils.retrievers.faiss.read_index') as mock_read_index, \
+        mock_index = MagicMock()
+        mock_index.ntotal = 3
+        
+        with patch('utils.retrievers.faiss.read_index', return_value=mock_index) as mock_read_index, \
              patch('builtins.open', unittest.mock.mock_open(read_data=pickle.dumps({
                 'notes': self.retriever.notes,
                 'note_ids': self.retriever.note_ids,
                 'metadata': self.retriever.metadata_dict,
                 'class_name': self.retriever.class_name
-             }))) as mock_file:
+             }))) as mock_file, \
+             patch('os.path.exists', return_value=True):
+        
             new_retriever = FaissRetriever(
                 note_class=ZettelNote,
                 model_name='test-model',
                 index_path=self.index_path,
                 use_reranker=False
             )
-            
+        
+            # Replace the embeddings with our mock for the new retriever
+            new_retriever.embeddings = self.mock_embeddings
+            new_retriever.embedding_dim = self.test_embedding_dim
+        
             # Check that the data was loaded correctly
             self.assertEqual(len(new_retriever.notes), 3)
             self.assertEqual(len(new_retriever.note_ids), 3)
@@ -479,49 +488,4 @@ class TestZettelNoteRetriever(unittest.TestCase):
         
         # Check that the embedding was generated and added to the index
         self.mock_embeddings.embed_query.assert_called_with(self.sample_zettel_note.content)
-        self.assertEqual(self.zettel_retriever.index.ntotal, 1)
-        
-        # Create a sample Cornell note for testing
-        self.sample_cornell_note = CornellMethodNote(
-            id="cornell-test-1",
-            source_id="source-123",
-            source_title="Test Source",
-            zettle_ids=[],
-            created_at=datetime.now().isoformat(),
-            accessed_at=datetime.now().isoformat(),
-            retrieval_count=0,
-            content="Test content",
-            note_simple=CornellSimple(main_note="Test Main Note", questions=["what is a test?"], summary="Test Summary")
-        )
-    
-    def tearDown(self):
-        """Clean up after each test method."""
-        self.mock_embeddings_patcher.stop()
-        
-        # Clean up temporary files
-        if os.path.exists(f"{self.index_path}.index"):
-            os.remove(f"{self.index_path}.index")
-        if os.path.exists(f"{self.index_path}.data"):
-            os.remove(f"{self.index_path}.data")
-    
-    def test_initialization(self):
-        """Test that the zettel note retriever initializes correctly."""
-        self.assertEqual(self.zettel_retriever.note_class, CornellMethodNote)
-        self.assertEqual(self.zettel_retriever.class_name, "CornellMethodNote")
-        self.assertEqual(self.zettel_retriever.embedding_dim, self.test_embedding_dim)
-        self.assertEqual(self.zettel_retriever.index_path, self.index_path)
-    
-    def test_add_document(self):
-        """Test adding a Cornell note to the retriever."""
-        doc_id = self.zettel_retriever.add_document(self.sample_zettel_note)
-        
-        # Check that the document was added correctly
-        self.assertEqual(doc_id, self.sample_zettel_note.id)
-        self.assertIn(doc_id, self.zettel_retriever.notes)
-        self.assertIn(doc_id, self.zettel_retriever.note_ids)
-        self.assertIn(doc_id, self.zettel_retriever.metadata_dict)
-        
-        # Check that the embedding was generated and added to the index
-        expected_content = f"{self.sample_zettel_note.content}"
-        self.mock_embeddings.embed_query.assert_called_with(expected_content)
         self.assertEqual(self.zettel_retriever.index.ntotal, 1)
