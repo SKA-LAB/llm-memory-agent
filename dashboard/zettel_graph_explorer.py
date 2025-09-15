@@ -43,7 +43,7 @@ def load_indices() -> List[str]:
     
     return [d.name for d in INDICES_DIR.iterdir() if d.is_dir()]
 
-def get_note_processor(index_name: str) -> Optional[NoteProcessor]:
+def get_note_processor(index_name: str, llm_provider: str="ollama", llm_model: str=None) -> Optional[NoteProcessor]:
     """Get a note processor for the specified index"""
     if not index_name:
         return None
@@ -58,7 +58,8 @@ def get_note_processor(index_name: str) -> Optional[NoteProcessor]:
     cornell_retriever = CornellNoteRetriever(index_path=cornell_index_path)
     zettel_retriever = ZettelNoteRetriever(index_path=zettel_index_path)
     
-    return NoteProcessor(cornell_retriever=cornell_retriever, zettel_retriever=zettel_retriever)
+    return NoteProcessor(cornell_retriever=cornell_retriever, zettel_retriever=zettel_retriever,
+                         llm_model=llm_model, llm_provider=llm_provider)
 
 def build_graph(zettel_retriever: ZettelNoteRetriever) -> Tuple[nx.Graph, Dict]:
     """Build a networkx graph from the Zettel notes and their links"""
@@ -232,10 +233,10 @@ def chunk_text(text, chunk_size=5000, overlap=500):
     
     return chunks
 
-def process_files(files, index_name):
+def process_files(files, index_name, llm_provider: str="ollama", llm_model: str= None):
     """Process uploaded files and add them to the index"""
     # Create or get the note processor for this index
-    processor = get_note_processor(index_name)
+    processor = get_note_processor(index_name, llm_provider, llm_model)
     if not processor:
         print(f"Note processor for index {index_name} does not exist. Creating...")
         # Create the index directory
@@ -251,7 +252,8 @@ def process_files(files, index_name):
         zettel_retriever = ZettelNoteRetriever(index_path=zettel_index_path)
         
         # Create note processor
-        processor = NoteProcessor(cornell_retriever=cornell_retriever, zettel_retriever=zettel_retriever)
+        processor = NoteProcessor(cornell_retriever=cornell_retriever, zettel_retriever=zettel_retriever,
+                                  llm_provider=llm_provider, llm_model=llm_model)
     else:
         print(f"Note processor for index {index_name} already exists")
     

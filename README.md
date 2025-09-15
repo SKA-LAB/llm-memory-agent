@@ -39,6 +39,17 @@ This system provides a comprehensive solution for capturing, organizing, and ret
 
 ## Architecture
 
+### System Overview
+
+![LLM Memory Agent Architecture](figures/mermaid-diagram-llm-memory-agent.png)
+
+The system follows a layered architecture with four distinct layers:
+
+1. **Layer 1: Input & Ingestion** - Handles source documents through the Source Document Manager
+2. **Layer 2: Processing & Memory** - Manages note structures and embeddings with the Memory System
+3. **Layer 3: Knowledge Storage** - Stores structured notes and maintains the FAISS vector index
+4. **Layer 4: Retrieval & Interface** - Provides search capabilities and user interfaces
+
 ### Core Components
 
 1. **Memory System** (`utils/cornell_zettel_memory_system.py`)

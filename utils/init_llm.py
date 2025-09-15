@@ -3,7 +3,10 @@ from langchain_openai import ChatOpenAI
 from ollama import chat
 from pydantic import BaseModel
 from typing import Union, Optional
+from dotenv import load_dotenv
 import os
+
+load_dotenv()  # Load environment variables from .env file
 
 def get_llm(
     provider: str = "ollama", 
@@ -32,8 +35,9 @@ def get_llm(
             **{k: v for k, v in kwargs.items() if k != "num_ctx"}
         )
     elif provider.lower() == "openai":
-        default_model = model or "gpt-3.5-turbo"
+        default_model = model or "Qwen/Qwen2.5-7B-Instruct-Turbo"
         api_key = kwargs.get("api_key") or os.getenv("OPENAI_API_KEY")
+        base_url = kwargs.get("base_url") or os.getenv("OPENAI_BASE_URL")
         if not api_key:
             raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY environment variable or pass api_key parameter.")
         
@@ -41,6 +45,7 @@ def get_llm(
             model=default_model,
             temperature=temperature,
             api_key=api_key,
+            base_url=base_url,
             **{k: v for k, v in kwargs.items() if k not in ["api_key", "num_ctx"]}
         )
     else:

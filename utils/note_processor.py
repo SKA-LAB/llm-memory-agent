@@ -20,13 +20,17 @@ class NoteProcessor:
     def __init__(
         self, 
         cornell_retriever: Optional[CornellNoteRetriever] = None,
-        zettel_retriever: Optional[ZettelNoteRetriever] = None
+        zettel_retriever: Optional[ZettelNoteRetriever] = None,
+        llm_provider: str="ollama",
+        llm_model: str=None,
     ):
         logger.info("Initializing NoteProcessor")
         self.cornell_retriever = cornell_retriever
         self.zettel_retriever = zettel_retriever
         logger.debug(f"Cornell retriever initialized: {cornell_retriever is not None}")
         logger.debug(f"Zettel retriever initialized: {zettel_retriever is not None}")
+        self.llm_provider = llm_provider
+        self.llm_model = llm_model
     
     def process_text(self, text: str, source_id: Optional[str] = None, source_title: Optional[str] = None) -> Tuple[CornellMethodNote, List[ZettelNote]]:
         """
@@ -141,7 +145,7 @@ class NoteProcessor:
             A CornellMethodNote object
         """
         logger.debug("Creating Cornell note from text")
-        cornell_note = generate_cornell_method_note(text)
+        cornell_note = generate_cornell_method_note(text, self.llm_provider, self.llm_model)
         logger.debug(f"Created Cornell note with title: {cornell_note.title}")
         return cornell_note
     
@@ -156,7 +160,7 @@ class NoteProcessor:
             A list of ZettelNote objects
         """
         logger.debug(f"Creating Zettel notes from Cornell note: {cornell_note.id}")
-        zettel_notes = get_Zettel_notes(cornell_note)
+        zettel_notes = get_Zettel_notes(cornell_note, llm_provider=self.llm_provider, llm_model=self.llm_model)
         logger.debug(f"Created {len(zettel_notes)} Zettel notes")
         return zettel_notes
     

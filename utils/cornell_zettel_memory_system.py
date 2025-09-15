@@ -81,13 +81,13 @@ class ZettelNote(BaseModel):
         return f"Zettel Note {self.id[:8]}"
 
 
-def generate_cornell_method_note(text: str) -> CornellMethodNote:
+def generate_cornell_method_note(text: str, llm_provider: str="ollama", llm_model: str=None) -> CornellMethodNote:
     logger.info("Generating Cornell method note from text")
     logger.debug(f"Input text length: {len(text)} characters")
     
     start_time = time.time()  # Start timing
     prompt = get_cornell_method_prompt(text)
-    llm = get_llm()
+    llm = get_llm(provider=llm_provider, model=llm_model)
     
     logger.debug("Sending prompt to LLM for Cornell note generation")
     llm_start_time = time.time()  # Time the LLM call specifically
@@ -130,7 +130,7 @@ Here is the text to process:
     return prompt
 
 
-def get_Zettel_notes(cornell_note: CornellMethodNote, retries: int=2) -> List[ZettelNote]:
+def get_Zettel_notes(cornell_note: CornellMethodNote, retries: int=2, llm_provider: str="ollama", llm_model: str=None) -> List[ZettelNote]:
     start_time = time.time()  # Start timing
     logger.info(f"Generating Zettel notes from Cornell note {cornell_note.id}")
     
@@ -144,7 +144,7 @@ def get_Zettel_notes(cornell_note: CornellMethodNote, retries: int=2) -> List[Ze
     prompt_duration = time.time() - prompt_start_time
     logger.debug(f"Created Zettel prompt in {prompt_duration:.2f} seconds")
     
-    llm = get_llm()
+    llm = get_llm(provider=llm_provider, model=llm_model)
     
     logger.debug("Sending prompt to LLM for Zettel notes generation")
     llm_start_time = time.time()  # Time the LLM call specifically
@@ -281,7 +281,7 @@ The synthesis Zettel identify the common theme in the set of notes above and sho
     return prompt
 
 
-def generate_synthesis_zettel(zettle_notes: List[ZettelNote]) -> ZettelNote:
+def generate_synthesis_zettel(zettle_notes: List[ZettelNote], llm_provider: str="ollama", llm_model: str=None) -> ZettelNote:
     start_time = time.time()  # Start timing
     logger.info(f"Generating synthesis Zettel from {len(zettle_notes)} notes")
     
@@ -294,7 +294,7 @@ def generate_synthesis_zettel(zettle_notes: List[ZettelNote]) -> ZettelNote:
     prompt_duration = time.time() - prompt_start_time
     logger.debug(f"Created synthesis Zettel prompt in {prompt_duration:.2f} seconds")
     
-    llm = get_llm()
+    llm = get_llm(provider=llm_provider, model=llm_model)
     
     logger.debug("Sending prompt to LLM for synthesis Zettel generation")
     llm_start_time = time.time()  # Time the LLM call specifically

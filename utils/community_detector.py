@@ -15,7 +15,7 @@ class ZettelCommunityDetector:
     and generates synthesis notes for each community.
     """
     
-    def __init__(self, zettel_retriever: ZettelNoteRetriever):
+    def __init__(self, zettel_retriever: ZettelNoteRetriever, llm_provider: str="ollama", llm_model: Optional[str] = None):
         """
         Initialize the community detector with a ZettelNoteRetriever.
         
@@ -23,6 +23,8 @@ class ZettelCommunityDetector:
             zettel_retriever: Retriever for accessing Zettel notes
         """
         self.zettel_retriever = zettel_retriever
+        self.llm_provider = llm_provider
+        self.llm_model = llm_model
         
     def build_graph(self) -> nx.Graph:
         """
@@ -173,7 +175,9 @@ class ZettelCommunityDetector:
             
             try:
                 # Generate a synthesis note for this community
-                synthesis_note = generate_synthesis_zettel(community_notes)
+                synthesis_note = generate_synthesis_zettel(community_notes,
+                                                           llm_provider=self.llm_provider,
+                                                           llm_model=self.llm_model)
                 
                 # Add community fingerprint to metadata
                 if not hasattr(synthesis_note, 'metadata'):
